@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contracttype, contractimpl, Address, Env};
+use soroban_sdk::{contract, contracterror, contracttype, contractimpl, token, Address, Env};
 
 /// A single donor -> NGO streaming donation.
 ///
@@ -34,6 +34,7 @@ pub enum Error {
     AlreadyInitialized = 1,
     NotInitialized = 2,
     StreamNotFound = 3,
+    InvalidAmount = 4,
 }
 
 #[contract]
@@ -64,6 +65,51 @@ impl DonationVault {
             .persistent()
             .get(&DataKey::Stream(stream_id))
             .ok_or(Error::StreamNotFound)
+    }
+
+    /// Opens a new stream: pulls `deposit` of `token` from the donor into the
+    /// vault, to be released to the NGO at `rate` per second on withdrawal.
+    pub fn create_stream(
+        env: Env,
+        donor: Address,
+        ngo: Address,
+        token: Address,
+        deposit: i128,
+        rate: i128,
+    ) -> Result<u64, Error> {
+        donor.require_auth();
+
+        if deposit <= 0 || rate <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&donor, &env.current_contract_address(), &deposit);
+
+        let stream_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextStreamId)
+            .unwrap_or(0);
+
+        let stream = Stream {
+            donor,
+            ngo,
+            token,
+            rate,
+            balance: deposit,
+            withdrawn: 0,
+            last_update: env.ledger().timestamp(),
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Stream(stream_id), &stream);
+        env.storage()
+            .instance()
+            .set(&DataKey::NextStreamId, &(stream_id + 1));
+
+        Ok(stream_id)
     }
 }
 
