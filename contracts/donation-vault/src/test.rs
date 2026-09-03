@@ -139,3 +139,41 @@ fn withdraw_with_nothing_accrued_fails() {
     let result = s.client.try_withdraw(&stream_id);
     assert_eq!(result, Err(Ok(Error::NothingToWithdraw)));
 }
+
+#[test]
+fn pause_blocks_create_but_not_cancel() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.client.pause();
+    assert!(s.client.paused());
+
+    let result = s
+        .client
+        .try_create_stream(&s.donor, &s.ngo, &s.token.address, &100, &10);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+
+    // Cancelling still works while paused, so donors are never trapped.
+    s.client.cancel_stream(&stream_id);
+    assert_eq!(s.token.balance(&s.donor), 1_000);
+}
+
+#[test]
+fn unpause_restores_normal_operation() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    s.client.pause();
+    s.client.unpause();
+    assert!(!s.client.paused());
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 1_000);
+}

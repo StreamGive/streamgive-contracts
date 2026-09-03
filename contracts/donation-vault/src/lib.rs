@@ -27,6 +27,7 @@ pub enum DataKey {
     Admin,
     NextStreamId,
     Stream(u64),
+    Paused,
 }
 
 #[contracterror]
@@ -38,6 +39,21 @@ pub enum Error {
     StreamNotFound = 3,
     InvalidAmount = 4,
     NothingToWithdraw = 5,
+    ContractPaused = 6,
+}
+
+/// Returns `Err(Error::ContractPaused)` if an admin has paused the vault.
+/// Checked at the top of every fund-moving entry point.
+fn require_not_paused(env: &Env) -> Result<(), Error> {
+    let paused: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false);
+    if paused {
+        return Err(Error::ContractPaused);
+    }
+    Ok(())
 }
 
 #[contract]
@@ -70,6 +86,38 @@ impl DonationVault {
             .ok_or(Error::StreamNotFound)
     }
 
+    /// Halts stream creation, withdrawal, top-up, and rate changes.
+    /// Admin-gated emergency brake; existing balances stay put and
+    /// `cancel_stream` still works so donors can always get a refund.
+    pub fn pause(env: Env) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Ok(())
+    }
+
+    pub fn paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
     /// Opens a new stream: pulls `deposit` of `token` from the donor into the
     /// vault, to be released to the NGO at `rate` per second on withdrawal.
     pub fn create_stream(
@@ -80,6 +128,7 @@ impl DonationVault {
         deposit: i128,
         rate: i128,
     ) -> Result<u64, Error> {
+        require_not_paused(&env)?;
         donor.require_auth();
 
         if deposit <= 0 || rate <= 0 {
@@ -118,6 +167,8 @@ impl DonationVault {
     /// Pays out everything accrued to the NGO since the last checkpoint.
     /// NGO-auth-gated.
     pub fn withdraw(env: Env, stream_id: u64) -> Result<i128, Error> {
+        require_not_paused(&env)?;
+
         let key = DataKey::Stream(stream_id);
         let mut stream: Stream = env
             .storage()
@@ -190,6 +241,8 @@ impl DonationVault {
     /// whatever has already accrued to the NGO first, so the top-up only
     /// ever affects accrual going forward.
     pub fn top_up(env: Env, stream_id: u64, amount: i128) -> Result<(), Error> {
+        require_not_paused(&env)?;
+
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -226,6 +279,8 @@ impl DonationVault {
     /// Settles whatever has already accrued at the old rate first, so the new
     /// rate only ever applies going forward — never retroactively.
     pub fn modify_rate(env: Env, stream_id: u64, new_rate: i128) -> Result<(), Error> {
+        require_not_paused(&env)?;
+
         if new_rate <= 0 {
             return Err(Error::InvalidAmount);
         }
