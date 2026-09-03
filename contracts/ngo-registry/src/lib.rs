@@ -75,4 +75,25 @@ impl NgoRegistry {
             .get(&DataKey::Ngo(owner))
             .ok_or(Error::NotRegistered)
     }
+
+    /// Marks a registered NGO as verified. Admin-only.
+    pub fn approve_ngo(env: Env, ngo_owner: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        let key = DataKey::Ngo(ngo_owner);
+        let mut ngo: Ngo = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotRegistered)?;
+        ngo.verified = true;
+        env.storage().persistent().set(&key, &ngo);
+
+        Ok(())
+    }
 }
