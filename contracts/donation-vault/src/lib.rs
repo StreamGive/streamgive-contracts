@@ -35,6 +35,7 @@ pub enum Error {
     NotInitialized = 2,
     StreamNotFound = 3,
     InvalidAmount = 4,
+    NothingToWithdraw = 5,
 }
 
 #[contract]
@@ -110,6 +111,39 @@ impl DonationVault {
             .set(&DataKey::NextStreamId, &(stream_id + 1));
 
         Ok(stream_id)
+    }
+
+    /// Pays out everything accrued to the NGO since the last checkpoint.
+    /// NGO-auth-gated. The accrual formula here is intentionally simple
+    /// (rate * elapsed seconds, capped at the remaining balance) — it moves
+    /// into a dedicated, overflow-checked math module in a later commit.
+    pub fn withdraw(env: Env, stream_id: u64) -> Result<i128, Error> {
+        let key = DataKey::Stream(stream_id);
+        let mut stream: Stream = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::StreamNotFound)?;
+
+        stream.ngo.require_auth();
+
+        let now = env.ledger().timestamp();
+        let elapsed = now.saturating_sub(stream.last_update);
+        let accrued = (stream.rate * elapsed as i128).min(stream.balance);
+
+        if accrued <= 0 {
+            return Err(Error::NothingToWithdraw);
+        }
+
+        stream.balance -= accrued;
+        stream.withdrawn += accrued;
+        stream.last_update = now;
+        env.storage().persistent().set(&key, &stream);
+
+        let token_client = token::Client::new(&env, &stream.token);
+        token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
+
+        Ok(accrued)
     }
 }
 
