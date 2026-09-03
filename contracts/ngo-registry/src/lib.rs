@@ -97,3 +97,5 @@ impl NgoRegistry {
         Ok(())
     }
 }
+
+mod test;
