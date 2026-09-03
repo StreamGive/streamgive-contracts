@@ -23,6 +23,8 @@ pub enum DataKey {
 pub enum Error {
     AlreadyInitialized = 1,
     NotInitialized = 2,
+    AlreadyRegistered = 3,
+    NotRegistered = 4,
 }
 
 #[contract]
@@ -44,5 +46,33 @@ impl NgoRegistry {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Submits an NGO application. Callable by the NGO's own address.
+    /// The entry starts unverified until an admin approves it.
+    pub fn register(env: Env, owner: Address, name: String) -> Result<(), Error> {
+        owner.require_auth();
+
+        let key = DataKey::Ngo(owner.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(Error::AlreadyRegistered);
+        }
+
+        let ngo = Ngo {
+            owner,
+            name,
+            verified: false,
+        };
+        env.storage().persistent().set(&key, &ngo);
+
+        Ok(())
+    }
+
+    /// Reads back an NGO's registry entry, registered or not.
+    pub fn get_ngo(env: Env, owner: Address) -> Result<Ngo, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Ngo(owner))
+            .ok_or(Error::NotRegistered)
     }
 }
