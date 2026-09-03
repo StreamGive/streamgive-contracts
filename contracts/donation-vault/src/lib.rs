@@ -185,6 +185,75 @@ impl DonationVault {
 
         Ok(())
     }
+
+    /// Adds more funds to an existing stream. Donor-auth-gated. Settles
+    /// whatever has already accrued to the NGO first, so the top-up only
+    /// ever affects accrual going forward.
+    pub fn top_up(env: Env, stream_id: u64, amount: i128) -> Result<(), Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let key = DataKey::Stream(stream_id);
+        let mut stream: Stream = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::StreamNotFound)?;
+
+        stream.donor.require_auth();
+
+        let token_client = token::Client::new(&env, &stream.token);
+
+        let now = env.ledger().timestamp();
+        let elapsed = now.saturating_sub(stream.last_update);
+        let accrued = (stream.rate * elapsed as i128).min(stream.balance);
+        if accrued > 0 {
+            token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
+            stream.balance -= accrued;
+            stream.withdrawn += accrued;
+        }
+        stream.last_update = now;
+
+        token_client.transfer(&stream.donor, &env.current_contract_address(), &amount);
+        stream.balance += amount;
+
+        env.storage().persistent().set(&key, &stream);
+        Ok(())
+    }
+
+    /// Changes the per-second accrual rate on an existing stream. Donor-auth-gated.
+    /// Settles whatever has already accrued at the old rate first, so the new
+    /// rate only ever applies going forward — never retroactively.
+    pub fn modify_rate(env: Env, stream_id: u64, new_rate: i128) -> Result<(), Error> {
+        if new_rate <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let key = DataKey::Stream(stream_id);
+        let mut stream: Stream = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::StreamNotFound)?;
+
+        stream.donor.require_auth();
+
+        let now = env.ledger().timestamp();
+        let elapsed = now.saturating_sub(stream.last_update);
+        let accrued = (stream.rate * elapsed as i128).min(stream.balance);
+        if accrued > 0 {
+            let token_client = token::Client::new(&env, &stream.token);
+            token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
+            stream.balance -= accrued;
+            stream.withdrawn += accrued;
+        }
+        stream.last_update = now;
+        stream.rate = new_rate;
+
+        env.storage().persistent().set(&key, &stream);
+        Ok(())
+    }
 }
 
 mod test;
