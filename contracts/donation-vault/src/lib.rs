@@ -30,6 +30,8 @@ pub enum DataKey {
     NextStreamId,
     Stream(u64),
     Paused,
+    Treasury,
+    FeeBps,
 }
 
 #[contracterror]
@@ -42,7 +44,12 @@ pub enum Error {
     InvalidAmount = 4,
     NothingToWithdraw = 5,
     ContractPaused = 6,
+    FeeTooHigh = 7,
 }
+
+/// Fee cap of 10%, enforced by `set_fee_bps` so the admin can never take
+/// an unreasonable cut of donations.
+const MAX_FEE_BPS: u32 = 1_000;
 
 /// Returns `Err(Error::ContractPaused)` if an admin has paused the vault.
 /// Checked at the top of every fund-moving entry point.
@@ -56,6 +63,34 @@ fn require_not_paused(env: &Env) -> Result<(), Error> {
         return Err(Error::ContractPaused);
     }
     Ok(())
+}
+
+/// Pays `amount` out to the NGO, skimming a protocol fee to the treasury
+/// first if one is configured. With no treasury set, the full amount goes
+/// to the NGO regardless of `fee_bps` — there's nowhere to send a fee.
+fn pay_ngo(env: &Env, token_client: &token::Client, ngo: &Address, amount: i128) {
+    if amount <= 0 {
+        return;
+    }
+
+    let treasury: Option<Address> = env.storage().instance().get(&DataKey::Treasury);
+    let fee = match &treasury {
+        Some(_) => {
+            let fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0);
+            (amount.saturating_mul(fee_bps as i128) / 10_000).min(amount)
+        }
+        None => 0,
+    };
+    let net = amount - fee;
+
+    if net > 0 {
+        token_client.transfer(&env.current_contract_address(), ngo, &net);
+    }
+    if fee > 0 {
+        if let Some(treasury) = treasury {
+            token_client.transfer(&env.current_contract_address(), &treasury, &fee);
+        }
+    }
 }
 
 #[contract]
@@ -120,6 +155,43 @@ impl DonationVault {
             .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
+    }
+
+    /// Sets where the protocol fee (if any) gets paid. Admin-gated.
+    pub fn set_treasury(env: Env, treasury: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Treasury, &treasury);
+        Ok(())
+    }
+
+    pub fn treasury(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Treasury)
+    }
+
+    /// Sets the protocol fee, in basis points, taken out of accrued payouts
+    /// to the NGO. Admin-gated, capped at `MAX_FEE_BPS`. Has no effect
+    /// unless a treasury is also set.
+    pub fn set_fee_bps(env: Env, fee_bps: u32) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        if fee_bps > MAX_FEE_BPS {
+            return Err(Error::FeeTooHigh);
+        }
+        env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
+        Ok(())
+    }
+
+    pub fn fee_bps(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
 
     /// Opens a new stream: pulls `deposit` of `token` from the donor into the
@@ -201,7 +273,7 @@ impl DonationVault {
         env.storage().persistent().set(&key, &stream);
 
         let token_client = token::Client::new(&env, &stream.token);
-        token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
+        pay_ngo(&env, &token_client, &stream.ngo, accrued);
 
         env.events()
             .publish((symbol_short!("withdraw"), stream_id), accrued);
@@ -231,7 +303,7 @@ impl DonationVault {
         let token_client = token::Client::new(&env, &stream.token);
 
         if accrued > 0 {
-            token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
+            pay_ngo(&env, &token_client, &stream.ngo, accrued);
             stream.withdrawn += accrued;
             stream.balance -= accrued;
         }
@@ -277,7 +349,7 @@ impl DonationVault {
         let elapsed = now.saturating_sub(stream.last_update);
         let accrued = math::accrued(stream.rate, elapsed, stream.balance);
         if accrued > 0 {
-            token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
+            pay_ngo(&env, &token_client, &stream.ngo, accrued);
             stream.balance -= accrued;
             stream.withdrawn += accrued;
         }
@@ -318,7 +390,7 @@ impl DonationVault {
         let accrued = math::accrued(stream.rate, elapsed, stream.balance);
         if accrued > 0 {
             let token_client = token::Client::new(&env, &stream.token);
-            token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
+            pay_ngo(&env, &token_client, &stream.ngo, accrued);
             stream.balance -= accrued;
             stream.withdrawn += accrued;
         }

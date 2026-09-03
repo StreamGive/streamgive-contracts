@@ -177,3 +177,49 @@ fn unpause_restores_normal_operation() {
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 1_000);
 }
+
+#[test]
+fn withdraw_with_no_treasury_takes_no_fee() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    s.client.set_fee_bps(&500); // configured, but no treasury yet
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 500);
+    assert_eq!(s.token.balance(&s.ngo), 500);
+}
+
+#[test]
+fn withdraw_splits_protocol_fee_to_treasury() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&500); // 5%
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 50); // 500 accrues
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 500);
+    assert_eq!(s.token.balance(&treasury), 25);
+    assert_eq!(s.token.balance(&s.ngo), 475);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.withdrawn, 500); // bookkeeping tracks the gross amount
+}
+
+#[test]
+fn set_fee_bps_rejects_over_cap() {
+    let s = setup();
+    let result = s.client.try_set_fee_bps(&1_001);
+    assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+}
