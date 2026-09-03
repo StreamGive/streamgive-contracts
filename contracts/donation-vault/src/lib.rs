@@ -139,6 +139,7 @@ impl DonationVault {
         Ok(())
     }
 
+    /// Reads back the vault admin set by `init`.
     pub fn admin(env: Env) -> Result<Address, Error> {
         env.storage()
             .instance()
@@ -170,6 +171,7 @@ impl DonationVault {
         Ok(())
     }
 
+    /// Lifts a pause, restoring normal operation. Admin-gated.
     pub fn unpause(env: Env) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -183,6 +185,7 @@ impl DonationVault {
         Ok(())
     }
 
+    /// Whether the vault is currently paused.
     pub fn paused(env: Env) -> bool {
         env.storage()
             .instance()
@@ -203,6 +206,7 @@ impl DonationVault {
         Ok(())
     }
 
+    /// Reads back the configured treasury address, if any.
     pub fn treasury(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Treasury)
     }
@@ -225,6 +229,7 @@ impl DonationVault {
         Ok(())
     }
 
+    /// Reads back the configured protocol fee, in basis points.
     pub fn fee_bps(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }

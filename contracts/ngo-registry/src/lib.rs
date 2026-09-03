@@ -69,6 +69,7 @@ impl NgoRegistry {
         Ok(())
     }
 
+    /// Reads back the registry admin set by `init`.
     pub fn admin(env: Env) -> Result<Address, Error> {
         env.storage()
             .instance()
