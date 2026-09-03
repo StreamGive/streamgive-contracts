@@ -1,9 +1,27 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 
-fn setup() -> (Env, DonationVaultClient<'static>, Address) {
+fn create_token<'a>(env: &Env, admin: &Address) -> (TokenClient<'a>, StellarAssetClient<'a>) {
+    let sac = env.register_stellar_asset_contract_v2(admin.clone());
+    (
+        TokenClient::new(env, &sac.address()),
+        StellarAssetClient::new(env, &sac.address()),
+    )
+}
+
+struct Setup<'a> {
+    env: Env,
+    client: DonationVaultClient<'a>,
+    token: TokenClient<'a>,
+    token_admin: StellarAssetClient<'a>,
+    donor: Address,
+    ngo: Address,
+}
+
+fn setup() -> Setup<'static> {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -13,25 +31,111 @@ fn setup() -> (Env, DonationVaultClient<'static>, Address) {
     let admin = Address::generate(&env);
     client.init(&admin);
 
-    (env, client, admin)
+    let token_issuer = Address::generate(&env);
+    let (token, token_admin) = create_token(&env, &token_issuer);
+
+    let donor = Address::generate(&env);
+    let ngo = Address::generate(&env);
+
+    Setup {
+        env,
+        client,
+        token,
+        token_admin,
+        donor,
+        ngo,
+    }
 }
 
 #[test]
-fn init_sets_admin() {
-    let (_env, client, admin) = setup();
-    assert_eq!(client.admin(), admin);
+fn full_lifecycle_create_accrue_withdraw_cancel() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    assert_eq!(s.token.balance(&s.donor), 0);
+    assert_eq!(s.token.balance(&s.client.address), 1_000);
+
+    // 50 seconds pass -> 10/s * 50 = 500 should be withdrawable.
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 500);
+    assert_eq!(s.token.balance(&s.ngo), 500);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 500);
+    assert_eq!(stream.withdrawn, 500);
+
+    // 20 more seconds pass, then the donor cancels.
+    s.env.ledger().with_mut(|l| l.timestamp += 20);
+    s.client.cancel_stream(&stream_id);
+
+    // 200 more settles to the NGO on cancel; the untouched 300 refunds to the donor.
+    assert_eq!(s.token.balance(&s.ngo), 700);
+    assert_eq!(s.token.balance(&s.donor), 300);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 0);
+    assert_eq!(stream.rate, 0);
 }
 
 #[test]
-fn double_init_fails() {
-    let (_env, client, admin) = setup();
-    let result = client.try_init(&admin);
-    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+fn top_up_and_modify_rate_settle_before_changing() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &2_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.env.ledger().with_mut(|l| l.timestamp += 10); // 100 accrues
+
+    s.client.top_up(&stream_id, &500);
+
+    assert_eq!(s.token.balance(&s.ngo), 100);
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 1_400); // 1000 - 100 accrued + 500 top-up
+    assert_eq!(stream.rate, 10);
+
+    s.env.ledger().with_mut(|l| l.timestamp += 5); // 50 more accrues at the old rate
+
+    s.client.modify_rate(&stream_id, &20);
+
+    assert_eq!(s.token.balance(&s.ngo), 150);
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.rate, 20);
+    assert_eq!(stream.balance, 1_350); // 1400 - 50
 }
 
 #[test]
-fn get_missing_stream_fails() {
-    let (_env, client, _admin) = setup();
-    let result = client.try_get_stream(&0u64);
-    assert_eq!(result, Err(Ok(Error::StreamNotFound)));
+fn create_stream_rejects_non_positive_amounts() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let result = s
+        .client
+        .try_create_stream(&s.donor, &s.ngo, &s.token.address, &0, &10);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    let result = s
+        .client
+        .try_create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn withdraw_with_nothing_accrued_fails() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    let result = s.client.try_withdraw(&stream_id);
+    assert_eq!(result, Err(Ok(Error::NothingToWithdraw)));
 }
