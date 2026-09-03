@@ -145,6 +145,46 @@ impl DonationVault {
 
         Ok(accrued)
     }
+
+    /// Stops a stream for good: settles whatever has already accrued to the
+    /// NGO (so cancelling doesn't claw back funds already earned), refunds
+    /// the untouched remainder to the donor, then zeroes the stream's rate
+    /// and balance. Donor-auth-gated. The record is kept, not deleted, so
+    /// the stream's history stays queryable.
+    pub fn cancel_stream(env: Env, stream_id: u64) -> Result<(), Error> {
+        let key = DataKey::Stream(stream_id);
+        let mut stream: Stream = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::StreamNotFound)?;
+
+        stream.donor.require_auth();
+
+        let now = env.ledger().timestamp();
+        let elapsed = now.saturating_sub(stream.last_update);
+        let accrued = (stream.rate * elapsed as i128).min(stream.balance);
+
+        let token_client = token::Client::new(&env, &stream.token);
+
+        if accrued > 0 {
+            token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
+            stream.withdrawn += accrued;
+            stream.balance -= accrued;
+        }
+
+        let refund = stream.balance;
+        if refund > 0 {
+            token_client.transfer(&env.current_contract_address(), &stream.donor, &refund);
+        }
+
+        stream.balance = 0;
+        stream.rate = 0;
+        stream.last_update = now;
+        env.storage().persistent().set(&key, &stream);
+
+        Ok(())
+    }
 }
 
 mod test;
