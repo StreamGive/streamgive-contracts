@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contracttype, contractimpl, token, Address, Env};
+use soroban_sdk::{
+    contract, contracterror, contracttype, contractimpl, symbol_short, token, Address, Env,
+};
 
 mod math;
 
@@ -97,6 +99,7 @@ impl DonationVault {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &true);
+        env.events().publish((symbol_short!("pause"),), ());
         Ok(())
     }
 
@@ -108,6 +111,7 @@ impl DonationVault {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
+        env.events().publish((symbol_short!("unpause"),), ());
         Ok(())
     }
 
@@ -145,9 +149,9 @@ impl DonationVault {
             .unwrap_or(0);
 
         let stream = Stream {
-            donor,
-            ngo,
-            token,
+            donor: donor.clone(),
+            ngo: ngo.clone(),
+            token: token.clone(),
             rate,
             balance: deposit,
             withdrawn: 0,
@@ -160,6 +164,11 @@ impl DonationVault {
         env.storage()
             .instance()
             .set(&DataKey::NextStreamId, &(stream_id + 1));
+
+        env.events().publish(
+            (symbol_short!("created"), stream_id),
+            (donor, ngo, token, deposit, rate),
+        );
 
         Ok(stream_id)
     }
@@ -193,6 +202,9 @@ impl DonationVault {
 
         let token_client = token::Client::new(&env, &stream.token);
         token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
+
+        env.events()
+            .publish((symbol_short!("withdraw"), stream_id), accrued);
 
         Ok(accrued)
     }
@@ -234,6 +246,9 @@ impl DonationVault {
         stream.last_update = now;
         env.storage().persistent().set(&key, &stream);
 
+        env.events()
+            .publish((symbol_short!("cancel"), stream_id), (accrued, refund));
+
         Ok(())
     }
 
@@ -272,6 +287,10 @@ impl DonationVault {
         stream.balance += amount;
 
         env.storage().persistent().set(&key, &stream);
+
+        env.events()
+            .publish((symbol_short!("topup"), stream_id), amount);
+
         Ok(())
     }
 
@@ -307,6 +326,10 @@ impl DonationVault {
         stream.rate = new_rate;
 
         env.storage().persistent().set(&key, &stream);
+
+        env.events()
+            .publish((symbol_short!("ratemod"), stream_id), new_rate);
+
         Ok(())
     }
 }

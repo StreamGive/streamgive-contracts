@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contracttype, contractimpl, Address, Env, String};
+use soroban_sdk::{
+    contract, contracterror, contracttype, contractimpl, symbol_short, Address, Env, String,
+};
 
 #[contracttype]
 #[derive(Clone)]
@@ -59,11 +61,14 @@ impl NgoRegistry {
         }
 
         let ngo = Ngo {
-            owner,
-            name,
+            owner: owner.clone(),
+            name: name.clone(),
             verified: false,
         };
         env.storage().persistent().set(&key, &ngo);
+
+        env.events()
+            .publish((symbol_short!("register"), owner), name);
 
         Ok(())
     }
@@ -93,6 +98,9 @@ impl NgoRegistry {
             .ok_or(Error::NotRegistered)?;
         ngo.verified = true;
         env.storage().persistent().set(&key, &ngo);
+
+        env.events()
+            .publish((symbol_short!("approved"), ngo_owner), ());
 
         Ok(())
     }
