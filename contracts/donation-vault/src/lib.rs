@@ -51,6 +51,36 @@ pub enum Error {
 /// an unreasonable cut of donations.
 const MAX_FEE_BPS: u32 = 1_000;
 
+/// Approximate ledgers per day at a 5-second close time. Used to express
+/// storage TTLs (which the network counts in ledgers, not wall time) in
+/// human terms.
+const DAY_IN_LEDGERS: u32 = 17_280;
+
+const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
+const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
+
+const STREAM_BUMP_AMOUNT: u32 = 90 * DAY_IN_LEDGERS;
+const STREAM_LIFETIME_THRESHOLD: u32 = STREAM_BUMP_AMOUNT - DAY_IN_LEDGERS;
+
+/// Keeps the contract instance (admin, config, next-id counter) from being
+/// archived. Called on every state-changing entry point.
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+}
+
+/// Keeps a stream's persistent entry alive for 90 days past its last
+/// touch, so a slow-draining stream doesn't get archived out from under
+/// its donor and NGO between activity.
+fn extend_stream_ttl(env: &Env, stream_id: u64) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::Stream(stream_id),
+        STREAM_LIFETIME_THRESHOLD,
+        STREAM_BUMP_AMOUNT,
+    );
+}
+
 /// Returns `Err(Error::ContractPaused)` if an admin has paused the vault.
 /// Checked at the top of every fund-moving entry point.
 fn require_not_paused(env: &Env) -> Result<(), Error> {
@@ -105,6 +135,7 @@ impl DonationVault {
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::NextStreamId, &0u64);
+        extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -134,6 +165,7 @@ impl DonationVault {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &true);
+        extend_instance_ttl(&env);
         env.events().publish((symbol_short!("pause"),), ());
         Ok(())
     }
@@ -146,6 +178,7 @@ impl DonationVault {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
+        extend_instance_ttl(&env);
         env.events().publish((symbol_short!("unpause"),), ());
         Ok(())
     }
@@ -166,6 +199,7 @@ impl DonationVault {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Treasury, &treasury);
+        extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -187,6 +221,7 @@ impl DonationVault {
             return Err(Error::FeeTooHigh);
         }
         env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
+        extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -237,6 +272,9 @@ impl DonationVault {
             .instance()
             .set(&DataKey::NextStreamId, &(stream_id + 1));
 
+        extend_instance_ttl(&env);
+        extend_stream_ttl(&env, stream_id);
+
         env.events().publish(
             (symbol_short!("created"), stream_id),
             (donor, ngo, token, deposit, rate),
@@ -271,6 +309,8 @@ impl DonationVault {
         stream.withdrawn += accrued;
         stream.last_update = now;
         env.storage().persistent().set(&key, &stream);
+        extend_instance_ttl(&env);
+        extend_stream_ttl(&env, stream_id);
 
         let token_client = token::Client::new(&env, &stream.token);
         pay_ngo(&env, &token_client, &stream.ngo, accrued);
@@ -317,6 +357,8 @@ impl DonationVault {
         stream.rate = 0;
         stream.last_update = now;
         env.storage().persistent().set(&key, &stream);
+        extend_instance_ttl(&env);
+        extend_stream_ttl(&env, stream_id);
 
         env.events()
             .publish((symbol_short!("cancel"), stream_id), (accrued, refund));
@@ -359,6 +401,8 @@ impl DonationVault {
         stream.balance += amount;
 
         env.storage().persistent().set(&key, &stream);
+        extend_instance_ttl(&env);
+        extend_stream_ttl(&env, stream_id);
 
         env.events()
             .publish((symbol_short!("topup"), stream_id), amount);
@@ -398,6 +442,8 @@ impl DonationVault {
         stream.rate = new_rate;
 
         env.storage().persistent().set(&key, &stream);
+        extend_instance_ttl(&env);
+        extend_stream_ttl(&env, stream_id);
 
         env.events()
             .publish((symbol_short!("ratemod"), stream_id), new_rate);

@@ -29,6 +29,31 @@ pub enum Error {
     NotRegistered = 4,
 }
 
+/// Approximate ledgers per day at a 5-second close time. Used to express
+/// storage TTLs (which the network counts in ledgers, not wall time) in
+/// human terms.
+const DAY_IN_LEDGERS: u32 = 17_280;
+
+const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
+const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
+
+const NGO_BUMP_AMOUNT: u32 = 90 * DAY_IN_LEDGERS;
+const NGO_LIFETIME_THRESHOLD: u32 = NGO_BUMP_AMOUNT - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+}
+
+fn extend_ngo_ttl(env: &Env, owner: &Address) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::Ngo(owner.clone()),
+        NGO_LIFETIME_THRESHOLD,
+        NGO_BUMP_AMOUNT,
+    );
+}
+
 #[contract]
 pub struct NgoRegistry;
 
@@ -40,6 +65,7 @@ impl NgoRegistry {
             return Err(Error::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -66,6 +92,8 @@ impl NgoRegistry {
             verified: false,
         };
         env.storage().persistent().set(&key, &ngo);
+        extend_instance_ttl(&env);
+        extend_ngo_ttl(&env, &owner);
 
         env.events()
             .publish((symbol_short!("register"), owner), name);
@@ -98,6 +126,8 @@ impl NgoRegistry {
             .ok_or(Error::NotRegistered)?;
         ngo.verified = true;
         env.storage().persistent().set(&key, &ngo);
+        extend_instance_ttl(&env);
+        extend_ngo_ttl(&env, &ngo_owner);
 
         env.events()
             .publish((symbol_short!("approved"), ngo_owner), ());
