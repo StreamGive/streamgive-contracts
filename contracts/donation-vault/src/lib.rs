@@ -2,6 +2,8 @@
 
 use soroban_sdk::{contract, contracterror, contracttype, contractimpl, token, Address, Env};
 
+mod math;
+
 /// A single donor -> NGO streaming donation.
 ///
 /// `balance` is the undrawn amount still deposited in the vault; `rate` is
@@ -114,9 +116,7 @@ impl DonationVault {
     }
 
     /// Pays out everything accrued to the NGO since the last checkpoint.
-    /// NGO-auth-gated. The accrual formula here is intentionally simple
-    /// (rate * elapsed seconds, capped at the remaining balance) — it moves
-    /// into a dedicated, overflow-checked math module in a later commit.
+    /// NGO-auth-gated.
     pub fn withdraw(env: Env, stream_id: u64) -> Result<i128, Error> {
         let key = DataKey::Stream(stream_id);
         let mut stream: Stream = env
@@ -129,7 +129,7 @@ impl DonationVault {
 
         let now = env.ledger().timestamp();
         let elapsed = now.saturating_sub(stream.last_update);
-        let accrued = (stream.rate * elapsed as i128).min(stream.balance);
+        let accrued = math::accrued(stream.rate, elapsed, stream.balance);
 
         if accrued <= 0 {
             return Err(Error::NothingToWithdraw);
@@ -163,7 +163,7 @@ impl DonationVault {
 
         let now = env.ledger().timestamp();
         let elapsed = now.saturating_sub(stream.last_update);
-        let accrued = (stream.rate * elapsed as i128).min(stream.balance);
+        let accrued = math::accrued(stream.rate, elapsed, stream.balance);
 
         let token_client = token::Client::new(&env, &stream.token);
 
@@ -207,7 +207,7 @@ impl DonationVault {
 
         let now = env.ledger().timestamp();
         let elapsed = now.saturating_sub(stream.last_update);
-        let accrued = (stream.rate * elapsed as i128).min(stream.balance);
+        let accrued = math::accrued(stream.rate, elapsed, stream.balance);
         if accrued > 0 {
             token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
             stream.balance -= accrued;
@@ -241,7 +241,7 @@ impl DonationVault {
 
         let now = env.ledger().timestamp();
         let elapsed = now.saturating_sub(stream.last_update);
-        let accrued = (stream.rate * elapsed as i128).min(stream.balance);
+        let accrued = math::accrued(stream.rate, elapsed, stream.balance);
         if accrued > 0 {
             let token_client = token::Client::new(&env, &stream.token);
             token_client.transfer(&env.current_contract_address(), &stream.ngo, &accrued);
