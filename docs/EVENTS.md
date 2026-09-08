@@ -1,0 +1,130 @@
+# Contract events
+
+Every event published by the contracts in this repo, with its topics and
+data shape, so an indexer can be written directly against this repo without
+going to `streamgive-docs` first.
+
+Soroban events have two parts:
+
+- **Topics** — a tuple, always starting with a `Symbol` naming the event.
+  Topics are indexed/filterable.
+- **Data** — the event payload. Shown below as the Rust type(s) passed to
+  `env.events().publish((topics...), data)`. A single value publishes as
+  itself; a tuple of values publishes as an XDR array in that order.
+
+`Address`, `i128`, `u64`, `u32`, `bool`, and `String` are the standard
+Soroban SDK/XDR types (`Address` is the SDK's account/contract address
+type, `String` is `soroban_sdk::String`).
+
+## `ngo-registry`
+
+### `register`
+
+Emitted by `register` when an NGO submits an application.
+
+| | |
+|---|---|
+| Topics | `("register", owner: Address)` |
+| Data | `name: String` |
+
+The entry starts unverified (`verified: false`); look for a matching
+`approved` event for the same `owner` to know when it's live.
+
+### `approved`
+
+Emitted by `approve_ngo` when an admin marks a registered NGO as verified.
+
+| | |
+|---|---|
+| Topics | `("approved", ngo_owner: Address)` |
+| Data | `()` (no payload) |
+
+## `donation-vault`
+
+### `pause`
+
+Emitted by `pause` when an admin halts stream creation, withdrawal, top-up,
+and rate changes.
+
+| | |
+|---|---|
+| Topics | `("pause",)` |
+| Data | `()` (no payload) |
+
+### `unpause`
+
+Emitted by `unpause` when an admin lifts a pause.
+
+| | |
+|---|---|
+| Topics | `("unpause",)` |
+| Data | `()` (no payload) |
+
+### `created`
+
+Emitted by `create_stream` when a donor opens a new stream.
+
+| | |
+|---|---|
+| Topics | `("created", stream_id: u64)` |
+| Data | `(donor: Address, ngo: Address, token: Address, deposit: i128, rate: i128)` |
+
+`deposit` is the amount pulled from the donor into the vault; `rate` is how
+much of it accrues to the NGO per second (see [`math::accrued`](../contracts/donation-vault/src/math.rs)).
+
+### `withdraw`
+
+Emitted by `withdraw` when an NGO claims everything accrued on a stream
+since the last checkpoint.
+
+| | |
+|---|---|
+| Topics | `("withdraw", stream_id: u64)` |
+| Data | `accrued: i128` |
+
+`accrued` is the gross amount released from the stream's balance — if a
+protocol fee is configured (see `set_fee_bps`/`set_treasury`), the NGO
+actually receives `accrued` minus the fee, with the fee paid to the
+treasury in the same transaction. No separate fee event is emitted; derive
+the split from the vault's `fee_bps()`/`treasury()` at the time of the
+transaction.
+
+### `cancel`
+
+Emitted by `cancel_stream` when a donor stops a stream for good.
+
+| | |
+|---|---|
+| Topics | `("cancel", stream_id: u64)` |
+| Data | `(accrued: i128, refund: i128)` |
+
+`accrued` is whatever had accrued to the NGO and was paid out (subject to
+the same protocol-fee split as `withdraw`) as part of settling the stream;
+`refund` is the untouched remainder returned to the donor. The stream
+record is kept with `balance` and `rate` zeroed, not deleted.
+
+### `topup`
+
+Emitted by `top_up` when a donor adds more funds to an existing stream.
+
+| | |
+|---|---|
+| Topics | `("topup", stream_id: u64)` |
+| Data | `amount: i128` |
+
+`amount` is only the newly added deposit. Any balance already accrued at
+the time of the top-up is settled to the NGO first (as its own implicit
+payout, without emitting a `withdraw` event) before the deposit is added.
+
+### `ratemod`
+
+Emitted by `modify_rate` when a donor changes a stream's per-second accrual
+rate.
+
+| | |
+|---|---|
+| Topics | `("ratemod", stream_id: u64)` |
+| Data | `new_rate: i128` |
+
+As with `top_up`, any balance already accrued at the old rate is settled to
+the NGO first, so the new rate only ever applies going forward.
