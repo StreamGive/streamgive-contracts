@@ -129,6 +129,21 @@ pub struct DonationVault;
 #[contractimpl]
 impl DonationVault {
     /// Sets the vault admin and seeds the stream-id counter. Can only be called once.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// let env = Env::default();
+    /// env.mock_all_auths();
+    ///
+    /// let contract_id = env.register(DonationVault, ());
+    /// let client = DonationVaultClient::new(&env, &contract_id);
+    ///
+    /// let admin = Address::generate(&env);
+    /// client.init(&admin);
+    /// ```
     pub fn init(env: Env, admin: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
@@ -140,6 +155,20 @@ impl DonationVault {
     }
 
     /// Reads back the vault admin set by `init`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert_eq!(client.admin(), admin);
+    /// ```
     pub fn admin(env: Env) -> Result<Address, Error> {
         env.storage()
             .instance()
@@ -148,6 +177,30 @@ impl DonationVault {
     }
 
     /// Reads back a stream by id.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::{Address as _, Ledger}, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    ///
+    /// let stream = client.get_stream(&stream_id);
+    /// assert_eq!(stream.balance, 1_000);
+    /// assert_eq!(stream.rate, 10);
+    /// ```
     pub fn get_stream(env: Env, stream_id: u64) -> Result<Stream, Error> {
         env.storage()
             .persistent()
@@ -158,6 +211,21 @@ impl DonationVault {
     /// Halts stream creation, withdrawal, top-up, and rate changes.
     /// Admin-gated emergency brake; existing balances stay put and
     /// `cancel_stream` still works so donors can always get a refund.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// client.pause();
+    /// assert!(client.paused());
+    /// ```
     pub fn pause(env: Env) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -172,6 +240,22 @@ impl DonationVault {
     }
 
     /// Lifts a pause, restoring normal operation. Admin-gated.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # client.pause();
+    /// client.unpause();
+    /// assert!(!client.paused());
+    /// ```
     pub fn unpause(env: Env) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -186,6 +270,20 @@ impl DonationVault {
     }
 
     /// Whether the vault is currently paused.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert!(!client.paused());
+    /// ```
     pub fn paused(env: Env) -> bool {
         env.storage()
             .instance()
@@ -194,6 +292,22 @@ impl DonationVault {
     }
 
     /// Sets where the protocol fee (if any) gets paid. Admin-gated.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// let treasury = Address::generate(&env);
+    /// client.set_treasury(&treasury);
+    /// assert_eq!(client.treasury(), Some(treasury));
+    /// ```
     pub fn set_treasury(env: Env, treasury: Address) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -207,6 +321,20 @@ impl DonationVault {
     }
 
     /// Reads back the configured treasury address, if any.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert_eq!(client.treasury(), None);
+    /// ```
     pub fn treasury(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Treasury)
     }
@@ -214,6 +342,25 @@ impl DonationVault {
     /// Sets the protocol fee, in basis points, taken out of accrued payouts
     /// to the NGO. Admin-gated, capped at `MAX_FEE_BPS`. Has no effect
     /// unless a treasury is also set.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// client.set_fee_bps(&500); // 5%
+    /// assert_eq!(client.fee_bps(), 500);
+    ///
+    /// // Anything over the 10% cap is rejected.
+    /// let result = client.try_set_fee_bps(&1_001);
+    /// assert!(result.is_err());
+    /// ```
     pub fn set_fee_bps(env: Env, fee_bps: u32) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -230,12 +377,48 @@ impl DonationVault {
     }
 
     /// Reads back the configured protocol fee, in basis points.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert_eq!(client.fee_bps(), 0);
+    /// ```
     pub fn fee_bps(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
 
     /// Opens a new stream: pulls `deposit` of `token` from the donor into the
     /// vault, to be released to the NGO at `rate` per second on withdrawal.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// // Stream 1_000 units of the token to `ngo` at 10 units/second.
+    /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    /// assert_eq!(client.get_stream(&stream_id).balance, 1_000);
+    /// ```
     pub fn create_stream(
         env: Env,
         donor: Address,
@@ -290,6 +473,32 @@ impl DonationVault {
 
     /// Pays out everything accrued to the NGO since the last checkpoint.
     /// NGO-auth-gated.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::{Address as _, Ledger}, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    ///
+    /// // 50 seconds pass -> 10/s * 50 = 500 has accrued.
+    /// env.ledger().with_mut(|l| l.timestamp += 50);
+    ///
+    /// let withdrawn = client.withdraw(&stream_id);
+    /// assert_eq!(withdrawn, 500);
+    /// ```
     pub fn withdraw(env: Env, stream_id: u64) -> Result<i128, Error> {
         require_not_paused(&env)?;
 
@@ -331,6 +540,32 @@ impl DonationVault {
     /// the untouched remainder to the donor, then zeroes the stream's rate
     /// and balance. Donor-auth-gated. The record is kept, not deleted, so
     /// the stream's history stays queryable.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::{Address as _, Ledger}, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    /// env.ledger().with_mut(|l| l.timestamp += 20); // 200 accrues
+    ///
+    /// // Settles the 200 already accrued to the NGO, refunds the
+    /// // untouched 800 to the donor, and zeroes the stream out.
+    /// client.cancel_stream(&stream_id);
+    /// assert_eq!(client.get_stream(&stream_id).balance, 0);
+    /// ```
     pub fn cancel_stream(env: Env, stream_id: u64) -> Result<(), Error> {
         let key = DataKey::Stream(stream_id);
         let mut stream: Stream = env
@@ -374,6 +609,30 @@ impl DonationVault {
     /// Adds more funds to an existing stream. Donor-auth-gated. Settles
     /// whatever has already accrued to the NGO first, so the top-up only
     /// ever affects accrual going forward.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::{Address as _, Ledger}, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &2_000);
+    /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    /// env.ledger().with_mut(|l| l.timestamp += 10); // 100 accrues and settles first
+    ///
+    /// client.top_up(&stream_id, &500);
+    /// assert_eq!(client.get_stream(&stream_id).balance, 1_400); // 1000 - 100 + 500
+    /// ```
     pub fn top_up(env: Env, stream_id: u64, amount: i128) -> Result<(), Error> {
         require_not_paused(&env)?;
 
@@ -418,6 +677,30 @@ impl DonationVault {
     /// Changes the per-second accrual rate on an existing stream. Donor-auth-gated.
     /// Settles whatever has already accrued at the old rate first, so the new
     /// rate only ever applies going forward — never retroactively.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::{Address as _, Ledger}, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    /// env.ledger().with_mut(|l| l.timestamp += 5); // 50 accrues at the old rate first
+    ///
+    /// client.modify_rate(&stream_id, &20);
+    /// assert_eq!(client.get_stream(&stream_id).rate, 20);
+    /// ```
     pub fn modify_rate(env: Env, stream_id: u64, new_rate: i128) -> Result<(), Error> {
         require_not_paused(&env)?;
 
