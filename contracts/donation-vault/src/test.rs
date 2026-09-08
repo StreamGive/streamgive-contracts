@@ -251,3 +251,37 @@ fn withdraw_fails_for_non_ngo_caller() {
 
     s.client.withdraw(&stream_id);
 }
+
+#[test]
+fn cancel_stream_twice_is_harmless() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.env.ledger().with_mut(|l| l.timestamp += 50); // 500 accrues
+
+    s.client.cancel_stream(&stream_id);
+    assert_eq!(s.token.balance(&s.ngo), 500);
+    assert_eq!(s.token.balance(&s.donor), 500);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 0);
+    assert_eq!(stream.rate, 0);
+    assert_eq!(stream.withdrawn, 500);
+
+    // Cancelling again settles zero (rate and balance are already zero) and
+    // refunds zero, leaving balances and stream state unchanged.
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+    s.client.cancel_stream(&stream_id);
+
+    assert_eq!(s.token.balance(&s.ngo), 500);
+    assert_eq!(s.token.balance(&s.donor), 500);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 0);
+    assert_eq!(stream.rate, 0);
+    assert_eq!(stream.withdrawn, 500);
+}
