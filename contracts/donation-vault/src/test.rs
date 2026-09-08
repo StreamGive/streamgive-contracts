@@ -1,8 +1,9 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+use soroban_sdk::IntoVal;
 
 fn create_token<'a>(env: &Env, admin: &Address) -> (TokenClient<'a>, StellarAssetClient<'a>) {
     let sac = env.register_stellar_asset_contract_v2(admin.clone());
@@ -222,4 +223,31 @@ fn set_fee_bps_rejects_over_cap() {
     let s = setup();
     let result = s.client.try_set_fee_bps(&1_001);
     assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+}
+
+#[test]
+#[should_panic]
+fn withdraw_fails_for_non_ngo_caller() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    // Only the donor authorizes this call; withdraw requires the ngo's auth,
+    // so it must fail even though the donor is a party to the stream.
+    s.env.mock_auths(&[MockAuth {
+        address: &s.donor,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "withdraw",
+            args: (stream_id,).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    s.client.withdraw(&stream_id);
 }
