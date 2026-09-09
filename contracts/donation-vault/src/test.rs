@@ -129,6 +129,32 @@ fn create_stream_rejects_non_positive_amounts() {
 }
 
 #[test]
+fn pending_accrual_matches_withdraw_without_mutating_state() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    // 50 seconds pass -> 10/s * 50 = 500 should be pending.
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    let pending = s.client.pending_accrual(&stream_id);
+    assert_eq!(pending, 500);
+
+    // Checking pending_accrual must not move funds or touch the stream.
+    assert_eq!(s.token.balance(&s.ngo), 0);
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 1_000);
+    assert_eq!(stream.withdrawn, 0);
+
+    // It should match exactly what withdraw actually pays out.
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, pending);
+}
+
+#[test]
 fn withdraw_with_nothing_accrued_fails() {
     let s = setup();
     s.token_admin.mint(&s.donor, &1_000);
