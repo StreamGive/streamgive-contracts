@@ -85,3 +85,28 @@ fn approve_unregistered_ngo_fails() {
     let result = client.try_approve_ngo(&random);
     assert_eq!(result, Err(Ok(Error::NotRegistered)));
 }
+
+#[test]
+fn revoke_ngo_clears_verified_status() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    let name = String::from_str(&env, "Red Cross");
+    client.register(&owner, &name);
+
+    client.approve_ngo(&owner);
+    assert!(client.get_ngo(&owner).verified);
+
+    client.revoke_ngo(&owner);
+
+    let ngo = client.get_ngo(&owner);
+    assert_eq!(ngo.verified, false);
+}
+
+#[test]
+fn revoke_unregistered_ngo_fails() {
+    let (env, client, _admin) = setup();
+    let random = Address::generate(&env);
+
+    let result = client.try_revoke_ngo(&random);
+    assert_eq!(result, Err(Ok(Error::NotRegistered)));
+}
