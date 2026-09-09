@@ -208,6 +208,46 @@ impl DonationVault {
             .ok_or(Error::StreamNotFound)
     }
 
+    /// Read-only lookup of how much a stream has accrued to the NGO so far.
+    /// Reuses the same math `withdraw` would use to pay out, but never
+    /// mutates storage or moves funds — safe to call as often as needed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::{Address as _, Ledger}, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    /// env.ledger().with_mut(|l| l.timestamp += 50);
+    ///
+    /// assert_eq!(client.pending_accrual(&stream_id), 500);
+    /// // Balance is untouched — pending_accrual doesn't pay out.
+    /// assert_eq!(client.get_stream(&stream_id).balance, 1_000);
+    /// ```
+    pub fn pending_accrual(env: Env, stream_id: u64) -> Result<i128, Error> {
+        let stream: Stream = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Stream(stream_id))
+            .ok_or(Error::StreamNotFound)?;
+
+        let now = env.ledger().timestamp();
+        let elapsed = now.saturating_sub(stream.last_update);
+        Ok(math::accrued(stream.rate, elapsed, stream.balance))
+    }
+
     /// Halts stream creation, withdrawal, top-up, and rate changes.
     /// Admin-gated emergency brake; existing balances stay put and
     /// `cancel_stream` still works so donors can always get a refund.
