@@ -129,6 +129,57 @@ fn create_stream_rejects_non_positive_amounts() {
 }
 
 #[test]
+fn propose_then_accept_admin_transfers_control() {
+    let s = setup();
+    let old_admin = s.client.admin();
+    let new_admin = Address::generate(&s.env);
+
+    s.client.propose_admin(&new_admin);
+    // Admin hasn't changed yet — only proposed.
+    assert_eq!(s.client.admin(), old_admin);
+
+    s.client.accept_admin();
+    assert_eq!(s.client.admin(), new_admin);
+
+    // The new admin can act as admin.
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    assert_eq!(s.client.treasury(), Some(treasury));
+}
+
+#[test]
+fn accept_admin_without_proposal_fails() {
+    let s = setup();
+    let result = s.client.try_accept_admin();
+    assert_eq!(result, Err(Ok(Error::NoPendingAdmin)));
+}
+
+#[test]
+#[should_panic]
+fn old_admin_loses_admin_gated_access_after_transfer() {
+    let s = setup();
+    let old_admin = s.client.admin();
+    let new_admin = Address::generate(&s.env);
+
+    s.client.propose_admin(&new_admin);
+    s.client.accept_admin();
+
+    // set_treasury requires the current admin's auth; only the old admin
+    // authorizes this call, and the old admin is no longer admin.
+    let treasury = Address::generate(&s.env);
+    s.env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "set_treasury",
+            args: (treasury.clone(),).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    }]);
+    s.client.set_treasury(&treasury);
+}
+
+#[test]
 fn pending_accrual_matches_withdraw_without_mutating_state() {
     let s = setup();
     s.token_admin.mint(&s.donor, &1_000);
