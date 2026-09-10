@@ -135,6 +135,34 @@ impl NgoRegistry {
 
         Ok(())
     }
+
+    /// Reverses a prior approval, marking a registered NGO as unverified
+    /// again. Admin-only. Returns `Error::NotRegistered` for an address
+    /// with no entry, matching `approve_ngo`'s existing behavior.
+    pub fn revoke_ngo(env: Env, ngo_owner: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        let key = DataKey::Ngo(ngo_owner);
+        let mut ngo: Ngo = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotRegistered)?;
+        ngo.verified = false;
+        env.storage().persistent().set(&key, &ngo);
+        extend_instance_ttl(&env);
+        extend_ngo_ttl(&env, &ngo_owner);
+
+        env.events()
+            .publish((symbol_short!("revoked"), ngo_owner), ());
+
+        Ok(())
+    }
 }
 
 mod test;
