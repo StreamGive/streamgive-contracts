@@ -34,5 +34,8 @@ jobs:
       - name: Build (wasm32 target)
         run: cargo build --workspace --target wasm32-unknown-unknown --release
 
+      - name: Check wasm binary size
+        run: bash scripts/check-wasm-size.sh
+
       - name: Test
         run: cargo test --workspace
