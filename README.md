@@ -8,6 +8,29 @@ platform for verified NGOs on Stellar.
 - `ngo-registry` — on-chain NGO application, verification, and registry
 - `donation-vault` — streaming donation vault (create / withdraw / cancel / modify streams)
 
+## Release profile
+
+The workspace `Cargo.toml`'s `[profile.release]` sets several non-default
+flags. Soroban's resource-fee model charges per byte of the deployed wasm
+and per CPU instruction executed, so a smaller, more predictable binary
+isn't just nice-to-have — it directly lowers what every invocation of
+these contracts costs:
+
+| Setting             | Value       | Why                                                                                                   |
+| -------------------- | ----------- | ------------------------------------------------------------------------------------------------------ |
+| `opt-level`          | `"z"`       | Optimizes for binary size over speed — wasm size drives upload and storage fees.                       |
+| `lto`                | `true`      | Whole-program link-time optimization, trimming dead code and shrinking the binary further.             |
+| `codegen-units`      | `1`         | A single codegen unit gives the optimizer the whole crate to work with, trading build time for smaller output. |
+| `panic`              | `"abort"`   | Drops unwinding tables and landing pads; Soroban traps on panic and can't unwind across the host boundary anyway. |
+| `strip`              | `"symbols"` | Strips symbol/debug info from the deployed artifact — of no use on-chain, pure size cost otherwise.     |
+| `debug`              | `0`         | No debug info emitted for release builds, same rationale as `strip`.                                    |
+| `debug-assertions`   | `false`     | Standard release behavior — keeps hot paths free of debug-only checks.                                  |
+| `overflow-checks`    | `true`      | Kept **on** in release, contrary to the Rust default — these contracts move token balances, and a silently wrapped `i128` is far worse than the small extra cost of a checked op. |
+
+Change these with care: relaxing `opt-level`, `lto`, or `strip` grows the
+deployed wasm and raises fees, while turning `overflow-checks` off would
+let balance arithmetic wrap silently.
+
 ## Related repositories
 
 - [streamgive-backend](https://github.com/streamgive/streamgive-backend) — indexer & API
