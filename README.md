@@ -8,6 +8,29 @@ platform for verified NGOs on Stellar.
 - `ngo-registry` — on-chain NGO application, verification, and registry
 - `donation-vault` — streaming donation vault (create / withdraw / cancel / modify streams)
 
+## Release profile
+
+The workspace `Cargo.toml`'s `[profile.release]` sets several non-default
+flags. Soroban's resource-fee model charges per byte of the deployed wasm
+and per CPU instruction executed, so a smaller, more predictable binary
+isn't just nice-to-have — it directly lowers what every invocation of
+these contracts costs:
+
+| Setting             | Value       | Why                                                                                                   |
+| -------------------- | ----------- | ------------------------------------------------------------------------------------------------------ |
+| `opt-level`          | `"z"`       | Optimizes for binary size over speed — wasm size drives upload and storage fees.                       |
+| `lto`                | `true`      | Whole-program link-time optimization, trimming dead code and shrinking the binary further.             |
+| `codegen-units`      | `1`         | A single codegen unit gives the optimizer the whole crate to work with, trading build time for smaller output. |
+| `panic`              | `"abort"`   | Drops unwinding tables and landing pads; Soroban traps on panic and can't unwind across the host boundary anyway. |
+| `strip`              | `"symbols"` | Strips symbol/debug info from the deployed artifact — of no use on-chain, pure size cost otherwise.     |
+| `debug`              | `0`         | No debug info emitted for release builds, same rationale as `strip`.                                    |
+| `debug-assertions`   | `false`     | Standard release behavior — keeps hot paths free of debug-only checks.                                  |
+| `overflow-checks`    | `true`      | Kept **on** in release, contrary to the Rust default — these contracts move token balances, and a silently wrapped `i128` is far worse than the small extra cost of a checked op. |
+
+Change these with care: relaxing `opt-level`, `lto`, or `strip` grows the
+deployed wasm and raises fees, while turning `overflow-checks` off would
+let balance arithmetic wrap silently.
+
 ## Related repositories
 
 - [streamgive-backend](https://github.com/streamgive/streamgive-backend) — indexer & API
@@ -46,6 +69,34 @@ Notable coverage:
 CI (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
 `cargo fmt --check`, `cargo clippy`, a `wasm32-unknown-unknown` release
 build, and `cargo test --workspace` on every push and pull request.
+
+## Error codes
+
+Each contract exposes its failures as a `#[contracterror] enum Error`,
+returned as `Result<_, Error>` from every fallible entry point. Clients see
+the numeric code below (e.g. a failed `try_withdraw` surfacing `Error(5)`).
+
+### `donation-vault`
+
+| Code | Error                | Meaning                                                                 |
+| ---- | --------------------- | ------------------------------------------------------------------------ |
+| 1    | `AlreadyInitialized`  | `init` was already called; the vault already has an admin.               |
+| 2    | `NotInitialized`      | `init` has not been called yet, so there is no admin to act as.          |
+| 3    | `StreamNotFound`      | No stream exists for the given stream id.                                |
+| 4    | `InvalidAmount`       | `deposit` or `rate` passed to `create_stream` was zero or negative.      |
+| 5    | `NothingToWithdraw`   | The stream has accrued nothing since its last checkpoint.                |
+| 6    | `ContractPaused`      | The admin has paused the vault; only `cancel_stream` still works.        |
+| 7    | `FeeTooHigh`          | `set_fee_bps` was called with a value above the 10% (1,000 bps) cap.     |
+| 8    | `NoPendingAdmin`      | `accept_admin` was called without a prior (or already-completed) `propose_admin`. |
+
+### `ngo-registry`
+
+| Code | Error                | Meaning                                                          |
+| ---- | --------------------- | ------------------------------------------------------------------ |
+| 1    | `AlreadyInitialized`  | `init` was already called; the registry already has an admin.    |
+| 2    | `NotInitialized`      | `init` has not been called yet, so there is no admin to act as.  |
+| 3    | `AlreadyRegistered`   | `register` was called for an address that already has an entry. |
+| 4    | `NotRegistered`       | No registry entry exists for the given owner address.            |
 
 ## Status
 
