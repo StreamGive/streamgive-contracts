@@ -45,7 +45,9 @@ Notable coverage:
 
 CI (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
 `cargo fmt --check`, `cargo clippy`, a `wasm32-unknown-unknown` release
-build, and `cargo test --workspace` on every push and pull request.
+build, a wasm binary size check (see
+[`scripts/check-wasm-size.sh`](scripts/check-wasm-size.sh)), and
+`cargo test --workspace` on every push and pull request.
 
 ## Status
 
