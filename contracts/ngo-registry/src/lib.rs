@@ -60,6 +60,21 @@ pub struct NgoRegistry;
 #[contractimpl]
 impl NgoRegistry {
     /// Sets the registry admin. Can only be called once.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use ngo_registry::{NgoRegistry, NgoRegistryClient};
+    /// let env = Env::default();
+    /// env.mock_all_auths();
+    ///
+    /// let contract_id = env.register(NgoRegistry, ());
+    /// let client = NgoRegistryClient::new(&env, &contract_id);
+    ///
+    /// let admin = Address::generate(&env);
+    /// client.init(&admin);
+    /// ```
     pub fn init(env: Env, admin: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
@@ -70,6 +85,20 @@ impl NgoRegistry {
     }
 
     /// Reads back the registry admin set by `init`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use ngo_registry::{NgoRegistry, NgoRegistryClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(NgoRegistry, ());
+    /// # let client = NgoRegistryClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert_eq!(client.admin(), admin);
+    /// ```
     pub fn admin(env: Env) -> Result<Address, Error> {
         env.storage()
             .instance()
@@ -79,6 +108,26 @@ impl NgoRegistry {
 
     /// Submits an NGO application. Callable by the NGO's own address.
     /// The entry starts unverified until an admin approves it.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    /// # use ngo_registry::{NgoRegistry, NgoRegistryClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(NgoRegistry, ());
+    /// # let client = NgoRegistryClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// let owner = Address::generate(&env);
+    /// let name = String::from_str(&env, "Example NGO");
+    /// client.register(&owner, &name);
+    ///
+    /// let ngo = client.get_ngo(&owner);
+    /// assert_eq!(ngo.name, name);
+    /// assert!(!ngo.verified);
+    /// ```
     pub fn register(env: Env, owner: Address, name: String) -> Result<(), Error> {
         owner.require_auth();
 
@@ -103,6 +152,25 @@ impl NgoRegistry {
     }
 
     /// Reads back an NGO's registry entry, registered or not.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    /// # use ngo_registry::{NgoRegistry, NgoRegistryClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(NgoRegistry, ());
+    /// # let client = NgoRegistryClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let owner = Address::generate(&env);
+    /// # let name = String::from_str(&env, "Example NGO");
+    /// # client.register(&owner, &name);
+    /// let ngo = client.get_ngo(&owner);
+    /// assert_eq!(ngo.owner, owner);
+    /// assert!(!ngo.verified);
+    /// ```
     pub fn get_ngo(env: Env, owner: Address) -> Result<Ngo, Error> {
         env.storage()
             .persistent()
@@ -111,6 +179,24 @@ impl NgoRegistry {
     }
 
     /// Marks a registered NGO as verified. Admin-only.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    /// # use ngo_registry::{NgoRegistry, NgoRegistryClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(NgoRegistry, ());
+    /// # let client = NgoRegistryClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let owner = Address::generate(&env);
+    /// # let name = String::from_str(&env, "Example NGO");
+    /// # client.register(&owner, &name);
+    /// client.approve_ngo(&owner);
+    /// assert!(client.get_ngo(&owner).verified);
+    /// ```
     pub fn approve_ngo(env: Env, ngo_owner: Address) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -139,6 +225,25 @@ impl NgoRegistry {
     /// Reverses a prior approval, marking a registered NGO as unverified
     /// again. Admin-only. Returns `Error::NotRegistered` for an address
     /// with no entry, matching `approve_ngo`'s existing behavior.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    /// # use ngo_registry::{NgoRegistry, NgoRegistryClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(NgoRegistry, ());
+    /// # let client = NgoRegistryClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let owner = Address::generate(&env);
+    /// # let name = String::from_str(&env, "Example NGO");
+    /// # client.register(&owner, &name);
+    /// # client.approve_ngo(&owner);
+    /// client.revoke_ngo(&owner);
+    /// assert!(!client.get_ngo(&owner).verified);
+    /// ```
     pub fn revoke_ngo(env: Env, ngo_owner: Address) -> Result<(), Error> {
         let admin: Address = env
             .storage()
