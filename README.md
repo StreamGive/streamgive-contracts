@@ -47,6 +47,34 @@ CI (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
 `cargo fmt --check`, `cargo clippy`, a `wasm32-unknown-unknown` release
 build, and `cargo test --workspace` on every push and pull request.
 
+## Error codes
+
+Each contract exposes its failures as a `#[contracterror] enum Error`,
+returned as `Result<_, Error>` from every fallible entry point. Clients see
+the numeric code below (e.g. a failed `try_withdraw` surfacing `Error(5)`).
+
+### `donation-vault`
+
+| Code | Error                | Meaning                                                                 |
+| ---- | --------------------- | ------------------------------------------------------------------------ |
+| 1    | `AlreadyInitialized`  | `init` was already called; the vault already has an admin.               |
+| 2    | `NotInitialized`      | `init` has not been called yet, so there is no admin to act as.          |
+| 3    | `StreamNotFound`      | No stream exists for the given stream id.                                |
+| 4    | `InvalidAmount`       | `deposit` or `rate` passed to `create_stream` was zero or negative.      |
+| 5    | `NothingToWithdraw`   | The stream has accrued nothing since its last checkpoint.                |
+| 6    | `ContractPaused`      | The admin has paused the vault; only `cancel_stream` still works.        |
+| 7    | `FeeTooHigh`          | `set_fee_bps` was called with a value above the 10% (1,000 bps) cap.     |
+| 8    | `NoPendingAdmin`      | `accept_admin` was called without a prior (or already-completed) `propose_admin`. |
+
+### `ngo-registry`
+
+| Code | Error                | Meaning                                                          |
+| ---- | --------------------- | ------------------------------------------------------------------ |
+| 1    | `AlreadyInitialized`  | `init` was already called; the registry already has an admin.    |
+| 2    | `NotInitialized`      | `init` has not been called yet, so there is no admin to act as.  |
+| 3    | `AlreadyRegistered`   | `register` was called for an address that already has an entry. |
+| 4    | `NotRegistered`       | No registry entry exists for the given owner address.            |
+
 ## Status
 
 Early development.
