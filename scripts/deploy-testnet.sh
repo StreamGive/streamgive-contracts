@@ -15,6 +15,19 @@ SOURCE_ACCOUNT="${STELLAR_SOURCE_ACCOUNT:?Set STELLAR_SOURCE_ACCOUNT to a funded
 WASM_DIR="target/wasm32v1-none/release"
 DEPLOYMENTS_FILE="deployments.json"
 
+# The admin is deliberately separate from the account paying the deploy
+# fees. The admin must be a wallet a human can actually sign with, since
+# approve_ngo and friends are driven from the browser admin panel — a
+# CLI-only deployer key cannot do that. Set STELLAR_ADMIN_ADDRESS to that
+# wallet; it falls back to the deployer for a throwaway local deploy.
+#
+# Resolved to a G-address up front either way: the CLI takes an identity
+# name for --source, but an Address-typed *argument* like init's --admin is
+# not guaranteed to resolve the same way, and init can only ever be called
+# once per contract — so pass something unambiguous.
+ADMIN_ADDRESS="${STELLAR_ADMIN_ADDRESS:-$(stellar keys address "$SOURCE_ACCOUNT")}"
+echo "Admin address: $ADMIN_ADDRESS"
+
 echo "Building contracts (release, wasm32v1-none)..."
 cargo build --workspace --target wasm32v1-none --release
 
@@ -34,25 +47,25 @@ echo "Deploying donation-vault..."
 DONATION_VAULT_ID=$(deploy_contract "donation_vault")
 echo "  -> $DONATION_VAULT_ID"
 
-echo "Initializing ngo-registry (admin: $SOURCE_ACCOUNT)..."
+echo "Initializing ngo-registry (admin: $ADMIN_ADDRESS)..."
 stellar contract invoke \
   --id "$NGO_REGISTRY_ID" \
   --source "$SOURCE_ACCOUNT" \
   --network "$NETWORK" \
-  -- init --admin "$SOURCE_ACCOUNT"
+  -- init --admin "$ADMIN_ADDRESS"
 
-echo "Initializing donation-vault (admin: $SOURCE_ACCOUNT)..."
+echo "Initializing donation-vault (admin: $ADMIN_ADDRESS)..."
 stellar contract invoke \
   --id "$DONATION_VAULT_ID" \
   --source "$SOURCE_ACCOUNT" \
   --network "$NETWORK" \
-  -- init --admin "$SOURCE_ACCOUNT"
+  -- init --admin "$ADMIN_ADDRESS"
 
 cat > "$DEPLOYMENTS_FILE" <<EOF
 {
   "network": "$NETWORK",
   "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "admin": "$SOURCE_ACCOUNT",
+  "admin": "$ADMIN_ADDRESS",
   "contracts": {
     "ngo-registry": "$NGO_REGISTRY_ID",
     "donation-vault": "$DONATION_VAULT_ID"
