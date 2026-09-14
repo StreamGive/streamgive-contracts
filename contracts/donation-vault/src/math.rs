@@ -96,7 +96,10 @@ mod test {
                     let a = accrued(rate, elapsed, balance);
 
                     // Never negative, never more than what's left in the stream.
-                    assert!(a >= 0, "negative accrual: rate={rate} elapsed={elapsed} balance={balance}");
+                    assert!(
+                        a >= 0,
+                        "negative accrual: rate={rate} elapsed={elapsed} balance={balance}"
+                    );
                     assert!(
                         a <= balance.max(0),
                         "accrual exceeds balance: rate={rate} elapsed={elapsed} balance={balance}"
