@@ -1,11 +1,20 @@
 #![no_std]
+// soroban-sdk 27 deprecates Events::publish in favour of the
+// #[contractevent] macro. Migrating is not a lint cleanup: #[contractevent]
+// derives its own topic/data layout, and streamgive-backend's indexer
+// decodes the current layout by hand (topic[0] = symbol, topic[1] = id),
+// as does docs/EVENTS.md. Both repos have to move in the same change, so
+// it is tracked as its own issue rather than done under -D warnings here.
+#![allow(deprecated)]
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
 };
 
 #[contracttype]
-#[derive(Clone)]
+// Debug and PartialEq let tests assert_eq! on a try_* call’s full
+// Result<Result<Ngo, _>, _> rather than unwrapping it by hand first.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Ngo {
     pub owner: Address,
     pub name: String,
@@ -205,7 +214,7 @@ impl NgoRegistry {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
-        let key = DataKey::Ngo(ngo_owner);
+        let key = DataKey::Ngo(ngo_owner.clone());
         let mut ngo: Ngo = env
             .storage()
             .persistent()
@@ -252,7 +261,7 @@ impl NgoRegistry {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
-        let key = DataKey::Ngo(ngo_owner);
+        let key = DataKey::Ngo(ngo_owner.clone());
         let mut ngo: Ngo = env
             .storage()
             .persistent()

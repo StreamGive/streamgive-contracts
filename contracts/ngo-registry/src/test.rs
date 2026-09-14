@@ -40,7 +40,7 @@ fn register_ngo_stores_unverified_entry() {
     let ngo = client.get_ngo(&owner);
     assert_eq!(ngo.owner, owner);
     assert_eq!(ngo.name, name);
-    assert_eq!(ngo.verified, false);
+    assert!(!ngo.verified);
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn revoke_ngo_clears_verified_status() {
     client.revoke_ngo(&owner);
 
     let ngo = client.get_ngo(&owner);
-    assert_eq!(ngo.verified, false);
+    assert!(!ngo.verified);
 }
 
 #[test]

@@ -12,11 +12,11 @@ set -euo pipefail
 
 NETWORK="testnet"
 SOURCE_ACCOUNT="${STELLAR_SOURCE_ACCOUNT:?Set STELLAR_SOURCE_ACCOUNT to a funded testnet identity name}"
-WASM_DIR="target/wasm32-unknown-unknown/release"
+WASM_DIR="target/wasm32v1-none/release"
 DEPLOYMENTS_FILE="deployments.json"
 
-echo "Building contracts (release, wasm32-unknown-unknown)..."
-cargo build --workspace --target wasm32-unknown-unknown --release
+echo "Building contracts (release, wasm32v1-none)..."
+cargo build --workspace --target wasm32v1-none --release
 
 deploy_contract() {
   local wasm_name="$1"

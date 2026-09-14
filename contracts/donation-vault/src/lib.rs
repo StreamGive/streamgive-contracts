@@ -1,4 +1,11 @@
 #![no_std]
+// soroban-sdk 27 deprecates Events::publish in favour of the
+// #[contractevent] macro. Migrating is not a lint cleanup: #[contractevent]
+// derives its own topic/data layout, and streamgive-backend's indexer
+// decodes the current layout by hand (topic[0] = symbol, topic[1] = id),
+// as does docs/EVENTS.md. Both repos have to move in the same change, so
+// it is tracked as its own issue rather than done under -D warnings here.
+#![allow(deprecated)]
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
@@ -553,7 +560,7 @@ impl DonationVault {
         }
 
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&donor, &env.current_contract_address(), &deposit);
+        token_client.transfer(&donor, env.current_contract_address(), &deposit);
 
         let stream_id: u64 = env
             .storage()
@@ -779,7 +786,7 @@ impl DonationVault {
         }
         stream.last_update = now;
 
-        token_client.transfer(&stream.donor, &env.current_contract_address(), &amount);
+        token_client.transfer(&stream.donor, env.current_contract_address(), &amount);
         stream.balance += amount;
 
         env.storage().persistent().set(&key, &stream);

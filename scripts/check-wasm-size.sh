@@ -10,12 +10,12 @@
 #
 # Run after building the release wasm32 target:
 #
-#   cargo build --workspace --target wasm32-unknown-unknown --release
+#   cargo build --workspace --target wasm32v1-none --release
 #   bash scripts/check-wasm-size.sh
 
 set -euo pipefail
 
-WASM_DIR="target/wasm32-unknown-unknown/release"
+WASM_DIR="target/wasm32v1-none/release"
 
 # Max size in bytes for each contract's compiled wasm.
 declare -A MAX_SIZES=(
@@ -30,7 +30,7 @@ for name in "${!MAX_SIZES[@]}"; do
   max="${MAX_SIZES[$name]}"
 
   if [[ ! -f "$wasm_path" ]]; then
-    echo "error: $wasm_path not found — build the wasm32-unknown-unknown release target first" >&2
+    echo "error: $wasm_path not found — build the wasm32v1-none release target first" >&2
     status=1
     continue
   fi

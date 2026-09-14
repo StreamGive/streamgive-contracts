@@ -14,7 +14,7 @@ Before opening a PR, run what CI runs (see
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --workspace --target wasm32-unknown-unknown --release
+cargo build --workspace --target wasm32v1-none --release
 cargo test --workspace
 ```
 

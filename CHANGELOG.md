@@ -29,6 +29,6 @@ This project does not yet follow a formal versioning scheme — each contract's
   [`docs/EVENTS.md`](docs/EVENTS.md)).
 - `scripts/deploy-testnet.sh` for deploying both contracts to testnet.
 - CI workflow running `cargo fmt --check`, `cargo clippy`, a
-  `wasm32-unknown-unknown` release build, and `cargo test --workspace`.
+  `wasm32v1-none` release build, and `cargo test --workspace`.
 
 [Unreleased]: https://github.com/StreamGive/streamgive-contracts/compare/main...HEAD
