@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 use soroban_sdk::{IntoVal, Val, Vec};
@@ -33,6 +34,16 @@ struct Setup<'a> {
 fn setup() -> Setup<'static> {
     let env = Env::default();
     env.mock_all_auths();
+
+    // New entries (the token's included) start with at least 20 days of
+    // TTL, so the TTL tests can age the ledger past the vault's bump
+    // thresholds without archiving the token out from under a transfer.
+    // 20 days is still below both thresholds, so the vault's own bumps on
+    // init and create_stream are what set its entries' TTLs.
+    env.ledger().with_mut(|l| {
+        l.min_persistent_entry_ttl = 20 * DAY_IN_LEDGERS;
+        l.max_entry_ttl = 365 * DAY_IN_LEDGERS;
+    });
 
     let contract_id = env.register(DonationVault, ());
     let client = DonationVaultClient::new(&env, &contract_id);
@@ -693,4 +704,144 @@ fn create_stream_stores_every_field() {
             last_update: 12_345,
         }
     );
+}
+
+fn instance_ttl(s: &Setup) -> u32 {
+    s.env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl())
+}
+
+fn stream_ttl(s: &Setup, stream_id: u64) -> u32 {
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Stream(stream_id))
+    })
+}
+
+/// Moves the ledger forward two days, which drops both the instance and a
+/// freshly bumped stream below their lifetime thresholds. Asserts that it
+/// did, so a test calling this can't pass just because nothing needed a bump.
+fn age_past_thresholds(s: &Setup, stream_id: Option<u64>) {
+    s.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += 2 * DAY_IN_LEDGERS);
+    assert!(instance_ttl(s) < INSTANCE_LIFETIME_THRESHOLD);
+    if let Some(stream_id) = stream_id {
+        assert!(stream_ttl(s, stream_id) < STREAM_LIFETIME_THRESHOLD);
+    }
+}
+
+fn create_ttl_test_stream(s: &Setup) -> u64 {
+    s.token_admin.mint(&s.donor, &2_000);
+    s.client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10)
+}
+
+#[test]
+fn create_stream_bumps_instance_and_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn withdraw_bumps_instance_and_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+    age_past_thresholds(&s, Some(stream_id));
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    s.client.withdraw(&stream_id);
+
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn cancel_stream_bumps_instance_and_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+    age_past_thresholds(&s, Some(stream_id));
+
+    s.client.cancel_stream(&stream_id);
+
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn top_up_bumps_instance_and_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+    age_past_thresholds(&s, Some(stream_id));
+
+    s.client.top_up(&stream_id, &500);
+
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn modify_rate_bumps_instance_and_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+    age_past_thresholds(&s, Some(stream_id));
+
+    s.client.modify_rate(&stream_id, &20);
+
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn extend_stream_bumps_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+    age_past_thresholds(&s, Some(stream_id));
+
+    s.client.extend_stream(&stream_id);
+
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn admin_writes_bump_instance_ttl() {
+    let s = setup();
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT); // from init
+
+    let new_admin = Address::generate(&s.env);
+    let treasury = Address::generate(&s.env);
+
+    age_past_thresholds(&s, None);
+    s.client.pause();
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    age_past_thresholds(&s, None);
+    s.client.unpause();
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    age_past_thresholds(&s, None);
+    s.client.set_treasury(&treasury);
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    age_past_thresholds(&s, None);
+    s.client.set_fee_bps(&100);
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    age_past_thresholds(&s, None);
+    s.client.propose_admin(&new_admin);
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    age_past_thresholds(&s, None);
+    s.client.cancel_admin_proposal();
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    s.client.propose_admin(&new_admin);
+    age_past_thresholds(&s, None);
+    s.client.accept_admin();
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
 }
