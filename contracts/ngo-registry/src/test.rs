@@ -110,3 +110,27 @@ fn revoke_unregistered_ngo_fails() {
     let result = client.try_revoke_ngo(&random);
     assert_eq!(result, Err(Ok(Error::NotRegistered)));
 }
+
+#[test]
+fn touch_ngo_leaves_entry_unchanged() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    let name = String::from_str(&env, "Red Cross");
+    client.register(&owner, &name);
+    client.approve_ngo(&owner);
+
+    let before = client.get_ngo(&owner);
+    client.touch_ngo(&owner);
+    let after = client.get_ngo(&owner);
+
+    assert_eq!(before, after);
+}
+
+#[test]
+fn touch_unregistered_ngo_fails() {
+    let (env, client, _admin) = setup();
+    let random = Address::generate(&env);
+
+    let result = client.try_touch_ngo(&random);
+    assert_eq!(result, Err(Ok(Error::NotRegistered)));
+}
