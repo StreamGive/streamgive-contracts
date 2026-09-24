@@ -571,3 +571,45 @@ fn cancel_stream_twice_is_harmless() {
     assert_eq!(stream.rate, 0);
     assert_eq!(stream.withdrawn, 500);
 }
+
+#[test]
+fn modify_rate_rejects_non_positive_rate() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    let result = s.client.try_modify_rate(&stream_id, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    let result = s.client.try_modify_rate(&stream_id, &-1);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // A rejected call settles nothing and changes nothing: pausing a
+    // stream goes through cancel_stream, not a zero rate.
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.rate, 10);
+    assert_eq!(stream.balance, 1_000);
+    assert_eq!(stream.withdrawn, 0);
+}
+
+#[test]
+fn modify_rate_on_unknown_stream_fails() {
+    let s = setup();
+
+    let result = s.client.try_modify_rate(&999, &10);
+    assert_eq!(result, Err(Ok(Error::StreamNotFound)));
+}
+
+#[test]
+fn modify_rate_checks_the_rate_before_the_stream_id() {
+    let s = setup();
+
+    // Both arguments are bad. The rate is validated before the stream is
+    // looked up, so the caller gets InvalidAmount rather than
+    // StreamNotFound — worth pinning so the order can't quietly flip.
+    let result = s.client.try_modify_rate(&999, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
