@@ -15,6 +15,31 @@ SOURCE_ACCOUNT="${STELLAR_SOURCE_ACCOUNT:?Set STELLAR_SOURCE_ACCOUNT to a funded
 WASM_DIR="target/wasm32v1-none/release"
 DEPLOYMENTS_FILE="deployments.json"
 
+# Fail fast, before anything is built or deployed, if the tools this script
+# depends on aren't there — otherwise a missing target can be discovered
+# only after ngo-registry has already deployed, leaving a half-finished
+# run behind.
+check_prerequisites() {
+  if ! command -v stellar >/dev/null 2>&1; then
+    echo "Error: the 'stellar' CLI is not installed or not on PATH." >&2
+    echo "See https://developers.stellar.org/docs/tools/cli for install instructions." >&2
+    exit 1
+  fi
+
+  if ! command -v rustup >/dev/null 2>&1; then
+    echo "Error: 'rustup' is not installed or not on PATH; can't verify the wasm32v1-none target." >&2
+    exit 1
+  fi
+
+  if ! rustup target list --installed | grep -qx "wasm32v1-none"; then
+    echo "Error: the wasm32v1-none target is not installed." >&2
+    echo "Install it with: rustup target add wasm32v1-none" >&2
+    exit 1
+  fi
+}
+
+check_prerequisites
+
 # The admin is deliberately separate from the account paying the deploy
 # fees. The admin must be a wallet a human can actually sign with, since
 # approve_ngo and friends are driven from the browser admin panel — a
