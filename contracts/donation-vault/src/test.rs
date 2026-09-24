@@ -656,3 +656,41 @@ fn top_up_checks_the_amount_before_the_stream_id() {
     let result = s.client.try_top_up(&999, &0);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
+
+#[test]
+fn get_stream_on_unknown_id_fails() {
+    let s = setup();
+
+    // Debug on Stream is what lets assert_eq! take the whole
+    // Result<Result<Stream, _>, _> here instead of matching on it.
+    let result = s.client.try_get_stream(&999);
+    assert_eq!(result, Err(Ok(Error::StreamNotFound)));
+}
+
+#[test]
+fn create_stream_stores_every_field() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    s.env.ledger().with_mut(|l| l.timestamp = 12_345);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    // PartialEq on Stream lets one assertion cover the whole struct, so a
+    // newly added field can't slip in unchecked the way it would with a
+    // handful of per-field assertions.
+    assert_eq!(
+        s.client.get_stream(&stream_id),
+        Stream {
+            donor: s.donor.clone(),
+            ngo: s.ngo.clone(),
+            token: s.token.address.clone(),
+            rate: 10,
+            balance: 1_000,
+            withdrawn: 0,
+            created_at: 12_345,
+            last_update: 12_345,
+        }
+    );
+}
