@@ -90,6 +90,20 @@ fn extend_stream_ttl(env: &Env, stream_id: u64) {
     );
 }
 
+/// Reads the configured admin and requires their auth, failing with
+/// `Error::NotInitialized` if `init` hasn't been called yet. Shared by
+/// every admin-gated entry point so the same three steps aren't repeated
+/// at each call site.
+fn require_admin(env: &Env) -> Result<Address, Error> {
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(Error::NotInitialized)?;
+    admin.require_auth();
+    Ok(admin)
+}
+
 /// Returns `Err(Error::ContractPaused)` if an admin has paused the vault.
 /// Checked at the top of every fund-moving entry point.
 fn require_not_paused(env: &Env) -> Result<(), Error> {
@@ -206,12 +220,7 @@ impl DonationVault {
     /// assert_eq!(client.admin(), admin);
     /// ```
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
 
         env.storage()
             .instance()
@@ -352,12 +361,7 @@ impl DonationVault {
     /// assert!(client.paused());
     /// ```
     pub fn pause(env: Env) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
         env.storage().instance().set(&DataKey::Paused, &true);
         extend_instance_ttl(&env);
         env.events().publish((symbol_short!("pause"),), ());
@@ -382,12 +386,7 @@ impl DonationVault {
     /// assert!(!client.paused());
     /// ```
     pub fn unpause(env: Env) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
         env.storage().instance().set(&DataKey::Paused, &false);
         extend_instance_ttl(&env);
         env.events().publish((symbol_short!("unpause"),), ());
@@ -434,12 +433,7 @@ impl DonationVault {
     /// assert_eq!(client.treasury(), Some(treasury));
     /// ```
     pub fn set_treasury(env: Env, treasury: Address) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         extend_instance_ttl(&env);
         Ok(())
@@ -487,12 +481,7 @@ impl DonationVault {
     /// assert!(result.is_err());
     /// ```
     pub fn set_fee_bps(env: Env, fee_bps: u32) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
         if fee_bps > MAX_FEE_BPS {
             return Err(Error::FeeTooHigh);
         }
