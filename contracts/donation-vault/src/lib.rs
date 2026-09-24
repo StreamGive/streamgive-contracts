@@ -59,6 +59,10 @@ pub enum Error {
     ContractPaused = 6,
     FeeTooHigh = 7,
     NoPendingAdmin = 8,
+    /// A stream's `balance` or `withdrawn` (or the stream-id counter) would
+    /// leave its type's range. Returned instead of letting the release
+    /// profile's overflow checks panic and abort the transaction.
+    ArithmeticOverflow = 9,
 }
 
 /// Fee cap of 10%, enforced by `set_fee_bps` so the admin can never take
@@ -120,6 +124,21 @@ fn require_not_paused(env: &Env) -> Result<(), Error> {
     if paused {
         return Err(Error::ContractPaused);
     }
+    Ok(())
+}
+
+/// Moves `amount` from a stream's `balance` into its `withdrawn` total,
+/// failing with `Error::ArithmeticOverflow` rather than panicking if
+/// either would leave i128's range.
+fn record_payout(stream: &mut Stream, amount: i128) -> Result<(), Error> {
+    stream.balance = stream
+        .balance
+        .checked_sub(amount)
+        .ok_or(Error::ArithmeticOverflow)?;
+    stream.withdrawn = stream
+        .withdrawn
+        .checked_add(amount)
+        .ok_or(Error::ArithmeticOverflow)?;
     Ok(())
 }
 
@@ -712,9 +731,12 @@ impl DonationVault {
         env.storage()
             .persistent()
             .set(&DataKey::Stream(stream_id), &stream);
+        let next_stream_id = stream_id
+            .checked_add(1)
+            .ok_or(Error::ArithmeticOverflow)?;
         env.storage()
             .instance()
-            .set(&DataKey::NextStreamId, &(stream_id + 1));
+            .set(&DataKey::NextStreamId, &next_stream_id);
 
         extend_instance_ttl(&env);
         extend_stream_ttl(&env, stream_id);
@@ -775,8 +797,7 @@ impl DonationVault {
             return Err(Error::NothingToWithdraw);
         }
 
-        stream.balance -= accrued;
-        stream.withdrawn += accrued;
+        record_payout(&mut stream, accrued)?;
         stream.last_update = now;
         env.storage().persistent().set(&key, &stream);
         extend_instance_ttl(&env);
@@ -840,8 +861,7 @@ impl DonationVault {
 
         if accrued > 0 {
             pay_ngo(&env, &token_client, &stream.ngo, accrued);
-            stream.withdrawn += accrued;
-            stream.balance -= accrued;
+            record_payout(&mut stream, accrued)?;
         }
 
         let refund = stream.balance;
@@ -912,13 +932,15 @@ impl DonationVault {
         let accrued = math::accrued(stream.rate, elapsed, stream.balance);
         if accrued > 0 {
             pay_ngo(&env, &token_client, &stream.ngo, accrued);
-            stream.balance -= accrued;
-            stream.withdrawn += accrued;
+            record_payout(&mut stream, accrued)?;
         }
         stream.last_update = now;
 
         token_client.transfer(&stream.donor, env.current_contract_address(), &amount);
-        stream.balance += amount;
+        stream.balance = stream
+            .balance
+            .checked_add(amount)
+            .ok_or(Error::ArithmeticOverflow)?;
 
         env.storage().persistent().set(&key, &stream);
         extend_instance_ttl(&env);
@@ -979,8 +1001,7 @@ impl DonationVault {
         if accrued > 0 {
             let token_client = token::Client::new(&env, &stream.token);
             pay_ngo(&env, &token_client, &stream.ngo, accrued);
-            stream.balance -= accrued;
-            stream.withdrawn += accrued;
+            record_payout(&mut stream, accrued)?;
         }
         stream.last_update = now;
         stream.rate = new_rate;

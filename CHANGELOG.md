@@ -31,4 +31,10 @@ This project does not yet follow a formal versioning scheme — each contract's
 - CI workflow running `cargo fmt --check`, `cargo clippy`, a
   `wasm32v1-none` release build, and `cargo test --workspace`.
 
+### Changed
+
+- `donation-vault`: stream `balance`/`withdrawn` updates and the stream-id
+  counter use checked arithmetic, returning `Error::ArithmeticOverflow`
+  instead of panicking on overflow.
+
 [Unreleased]: https://github.com/StreamGive/streamgive-contracts/compare/main...HEAD
