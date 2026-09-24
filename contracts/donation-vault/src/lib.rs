@@ -344,6 +344,41 @@ impl DonationVault {
         Ok(math::accrued(stream.rate, elapsed, stream.balance))
     }
 
+    /// Bumps a stream's persistent-storage TTL without touching its state.
+    /// Callable by anyone — donor, NGO, or a keeper bot — so a slow,
+    /// long-running stream that nobody happens to write to doesn't get
+    /// archived out from under its funds between activity.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    ///
+    /// // Anyone can keep the stream's storage alive, no auth required.
+    /// client.extend_stream(&stream_id);
+    /// ```
+    pub fn extend_stream(env: Env, stream_id: u64) -> Result<(), Error> {
+        if !env.storage().persistent().has(&DataKey::Stream(stream_id)) {
+            return Err(Error::StreamNotFound);
+        }
+        extend_stream_ttl(&env, stream_id);
+        Ok(())
+    }
+
     /// Halts stream creation, withdrawal, top-up, and rate changes.
     /// Admin-gated emergency brake; existing balances stay put and
     /// `cancel_stream` still works so donors can always get a refund.
