@@ -201,6 +201,32 @@ impl DonationVault {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Reads back the address proposed by `propose_admin`, if any hasn't
+    /// yet been accepted or cancelled. Lets the proposed admin (or anyone
+    /// else) check whether there's something to accept without having to
+    /// watch for the `propadmin` event.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert_eq!(client.pending_admin(), None);
+    ///
+    /// let new_admin = Address::generate(&env);
+    /// client.propose_admin(&new_admin);
+    /// assert_eq!(client.pending_admin(), Some(new_admin));
+    /// ```
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
     /// Starts a two-step admin transfer by recording `new_admin` as pending.
     /// Requires the current admin's auth. Has no effect on who can act as
     /// admin until `accept_admin` is called by the proposed address.
@@ -272,6 +298,46 @@ impl DonationVault {
         Ok(())
     }
 
+    /// Withdraws a pending admin proposal, leaving nothing pending. Requires
+    /// the current admin's auth. Fails with `Error::NoPendingAdmin` if
+    /// `propose_admin` was never called, or the proposal was already
+    /// accepted or cancelled.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// let new_admin = Address::generate(&env);
+    /// client.propose_admin(&new_admin);
+    ///
+    /// // The admin changes their mind before it's accepted.
+    /// client.cancel_admin_proposal();
+    ///
+    /// // Nothing left to accept.
+    /// let result = client.try_accept_admin();
+    /// assert!(result.is_err());
+    /// ```
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
+        require_admin(&env)?;
+
+        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::NoPendingAdmin);
+        }
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        extend_instance_ttl(&env);
+
+        env.events().publish((symbol_short!("canceladm"),), ());
+
+        Ok(())
+    }
+
     /// Reads back a stream by id.
     ///
     /// # Examples
@@ -302,6 +368,40 @@ impl DonationVault {
             .persistent()
             .get(&DataKey::Stream(stream_id))
             .ok_or(Error::StreamNotFound)
+    }
+
+    /// Reads back the number of streams ever created — the exclusive upper
+    /// bound on valid stream ids. Lets a client enumerate streams (ids `0`
+    /// through `stream_count() - 1`) or just show a running total, without
+    /// exposing the raw `NextStreamId` counter directly.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert_eq!(client.stream_count(), 0);
+    ///
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    /// assert_eq!(client.stream_count(), 1);
+    /// ```
+    pub fn stream_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::NextStreamId)
+            .unwrap_or(0)
     }
 
     /// Read-only lookup of how much a stream has accrued to the NGO so far.
@@ -342,6 +442,41 @@ impl DonationVault {
         let now = env.ledger().timestamp();
         let elapsed = now.saturating_sub(stream.last_update);
         Ok(math::accrued(stream.rate, elapsed, stream.balance))
+    }
+
+    /// Bumps a stream's persistent-storage TTL without touching its state.
+    /// Callable by anyone — donor, NGO, or a keeper bot — so a slow,
+    /// long-running stream that nobody happens to write to doesn't get
+    /// archived out from under its funds between activity.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    ///
+    /// // Anyone can keep the stream's storage alive, no auth required.
+    /// client.extend_stream(&stream_id);
+    /// ```
+    pub fn extend_stream(env: Env, stream_id: u64) -> Result<(), Error> {
+        if !env.storage().persistent().has(&DataKey::Stream(stream_id)) {
+            return Err(Error::StreamNotFound);
+        }
+        extend_stream_ttl(&env, stream_id);
+        Ok(())
     }
 
     /// Halts stream creation, withdrawal, top-up, and rate changes.
