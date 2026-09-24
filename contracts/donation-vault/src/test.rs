@@ -418,6 +418,56 @@ fn cancel_stream_splits_protocol_fee_on_accrued_but_not_on_refund() {
 }
 
 #[test]
+fn small_payout_rounds_protocol_fee_down_to_zero() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&500); // 5%
+
+    // 19 units at 5% is 0.95, and the fee is computed with integer
+    // division, so it truncates to nothing.
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &19);
+    s.env.ledger().with_mut(|l| l.timestamp += 1); // 19 accrues
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 19);
+
+    // The rounding favours the NGO: it keeps the whole payout rather than
+    // the treasury rounding its cut up to 1.
+    assert_eq!(s.token.balance(&s.ngo), 19);
+    assert_eq!(s.token.balance(&treasury), 0);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.withdrawn, 19);
+}
+
+#[test]
+fn protocol_fee_becomes_nonzero_at_the_rounding_boundary() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&500); // 5%
+
+    // 20 is the smallest payout at 5% that leaves a whole unit of fee, so
+    // it pins the other side of the boundary that 19 truncates below.
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &20);
+    s.env.ledger().with_mut(|l| l.timestamp += 1); // 20 accrues
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 20);
+    assert_eq!(s.token.balance(&treasury), 1);
+    assert_eq!(s.token.balance(&s.ngo), 19);
+}
+
+#[test]
 fn set_fee_bps_rejects_over_cap() {
     let s = setup();
     let result = s.client.try_set_fee_bps(&1_001);
