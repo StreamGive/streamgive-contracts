@@ -1,9 +1,12 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
+use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
+use soroban_sdk::testutils::{
+    Address as _, AuthorizedFunction, Ledger, MockAuth, MockAuthInvoke,
+};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{IntoVal, Val, Vec};
+use soroban_sdk::{IntoVal, Symbol, Val, Vec};
 
 /// The topics and data of the most recently published event, regardless of
 /// which contract emitted it — vault entry points always publish their own
@@ -33,6 +36,16 @@ struct Setup<'a> {
 fn setup() -> Setup<'static> {
     let env = Env::default();
     env.mock_all_auths();
+
+    // New entries (the token's included) start with at least 20 days of
+    // TTL, so the TTL tests can age the ledger past the vault's bump
+    // thresholds without archiving the token out from under a transfer.
+    // 20 days is still below both thresholds, so the vault's own bumps on
+    // init and create_stream are what set its entries' TTLs.
+    env.ledger().with_mut(|l| {
+        l.min_persistent_entry_ttl = 20 * DAY_IN_LEDGERS;
+        l.max_entry_ttl = 365 * DAY_IN_LEDGERS;
+    });
 
     let contract_id = env.register(DonationVault, ());
     let client = DonationVaultClient::new(&env, &contract_id);
@@ -693,4 +706,350 @@ fn create_stream_stores_every_field() {
             last_update: 12_345,
         }
     );
+}
+
+fn instance_ttl(s: &Setup) -> u32 {
+    s.env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl())
+}
+
+fn stream_ttl(s: &Setup, stream_id: u64) -> u32 {
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Stream(stream_id))
+    })
+}
+
+/// Moves the ledger forward two days, which drops both the instance and a
+/// freshly bumped stream below their lifetime thresholds. Asserts that it
+/// did, so a test calling this can't pass just because nothing needed a bump.
+fn age_past_thresholds(s: &Setup, stream_id: Option<u64>) {
+    s.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += 2 * DAY_IN_LEDGERS);
+    assert!(instance_ttl(s) < INSTANCE_LIFETIME_THRESHOLD);
+    if let Some(stream_id) = stream_id {
+        assert!(stream_ttl(s, stream_id) < STREAM_LIFETIME_THRESHOLD);
+    }
+}
+
+fn create_ttl_test_stream(s: &Setup) -> u64 {
+    s.token_admin.mint(&s.donor, &2_000);
+    s.client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10)
+}
+
+#[test]
+fn create_stream_bumps_instance_and_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn withdraw_bumps_instance_and_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+    age_past_thresholds(&s, Some(stream_id));
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    s.client.withdraw(&stream_id);
+
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn cancel_stream_bumps_instance_and_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+    age_past_thresholds(&s, Some(stream_id));
+
+    s.client.cancel_stream(&stream_id);
+
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn top_up_bumps_instance_and_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+    age_past_thresholds(&s, Some(stream_id));
+
+    s.client.top_up(&stream_id, &500);
+
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn modify_rate_bumps_instance_and_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+    age_past_thresholds(&s, Some(stream_id));
+
+    s.client.modify_rate(&stream_id, &20);
+
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn extend_stream_bumps_stream_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+    age_past_thresholds(&s, Some(stream_id));
+
+    s.client.extend_stream(&stream_id);
+
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
+fn admin_writes_bump_instance_ttl() {
+    let s = setup();
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT); // from init
+
+    let new_admin = Address::generate(&s.env);
+    let treasury = Address::generate(&s.env);
+
+    age_past_thresholds(&s, None);
+    s.client.pause();
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    age_past_thresholds(&s, None);
+    s.client.unpause();
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    age_past_thresholds(&s, None);
+    s.client.set_treasury(&treasury);
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    age_past_thresholds(&s, None);
+    s.client.set_fee_bps(&100);
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    age_past_thresholds(&s, None);
+    s.client.propose_admin(&new_admin);
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    age_past_thresholds(&s, None);
+    s.client.cancel_admin_proposal();
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+
+    s.client.propose_admin(&new_admin);
+    age_past_thresholds(&s, None);
+    s.client.accept_admin();
+    assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+}
+
+/// Rewrites a stored stream in place, for pushing its bookkeeping to the
+/// edge of i128 — no real token supply could get it there.
+fn overwrite_stream(s: &Setup, stream_id: u64, edit: impl FnOnce(&mut Stream)) {
+    s.env.as_contract(&s.client.address, || {
+        let key = DataKey::Stream(stream_id);
+        let mut stream: Stream = s.env.storage().persistent().get(&key).unwrap();
+        edit(&mut stream);
+        s.env.storage().persistent().set(&key, &stream);
+    });
+}
+
+#[test]
+fn top_up_past_i128_max_balance_returns_overflow_error() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_001);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    overwrite_stream(&s, stream_id, |stream| stream.balance = i128::MAX);
+
+    let result = s.client.try_top_up(&stream_id, &1);
+    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+
+    // The failed call rolls back, so the donor keeps the unit it tried to add.
+    assert_eq!(s.token.balance(&s.donor), 1);
+}
+
+#[test]
+fn withdraw_past_i128_max_withdrawn_returns_overflow_error() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    overwrite_stream(&s, stream_id, |stream| stream.withdrawn = i128::MAX);
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    let result = s.client.try_withdraw(&stream_id);
+    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+    assert_eq!(s.token.balance(&s.ngo), 0);
+}
+
+#[test]
+fn cancel_stream_past_i128_max_withdrawn_returns_overflow_error() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    overwrite_stream(&s, stream_id, |stream| stream.withdrawn = i128::MAX);
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    let result = s.client.try_cancel_stream(&stream_id);
+    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+    assert_eq!(s.token.balance(&s.ngo), 0);
+    assert_eq!(s.token.balance(&s.donor), 0);
+}
+
+#[test]
+fn modify_rate_past_i128_max_withdrawn_returns_overflow_error() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    overwrite_stream(&s, stream_id, |stream| stream.withdrawn = i128::MAX);
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    let result = s.client.try_modify_rate(&stream_id, &20);
+    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+    assert_eq!(s.client.get_stream(&stream_id).rate, 10);
+}
+
+/// Asserts that the last top-level call required auth from exactly one
+/// address, `expected`, and that it was for `fn_name` on the vault.
+/// mock_all_auths() lets any require_auth pass, so without this a
+/// require_auth removed or moved to the wrong address would go unnoticed.
+fn assert_auth_required_from(s: &Setup, expected: &Address, fn_name: &str) {
+    let auths = s.env.auths();
+    assert_eq!(auths.len(), 1, "expected exactly one authorizer");
+
+    let (address, invocation) = &auths[0];
+    assert_eq!(address, expected);
+    match &invocation.function {
+        AuthorizedFunction::Contract((contract, function, _)) => {
+            assert_eq!(contract, &s.client.address);
+            assert_eq!(function, &Symbol::new(&s.env, fn_name));
+        }
+        _ => panic!("expected a contract invocation"),
+    }
+}
+
+#[test]
+fn create_stream_requires_donor_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    s.client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    assert_auth_required_from(&s, &s.donor, "create_stream");
+}
+
+#[test]
+fn withdraw_requires_ngo_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    s.client.withdraw(&stream_id);
+
+    assert_auth_required_from(&s, &s.ngo, "withdraw");
+}
+
+#[test]
+fn cancel_stream_requires_donor_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.client.cancel_stream(&stream_id);
+
+    assert_auth_required_from(&s, &s.donor, "cancel_stream");
+}
+
+#[test]
+fn top_up_requires_donor_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_500);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.client.top_up(&stream_id, &500);
+
+    assert_auth_required_from(&s, &s.donor, "top_up");
+}
+
+#[test]
+fn modify_rate_requires_donor_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.client.modify_rate(&stream_id, &20);
+
+    assert_auth_required_from(&s, &s.donor, "modify_rate");
+}
+
+#[test]
+fn extend_stream_requires_no_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.client.extend_stream(&stream_id);
+
+    assert!(s.env.auths().is_empty());
+}
+
+#[test]
+fn admin_entry_points_require_admin_auth() {
+    let s = setup();
+    let admin = s.client.admin();
+
+    s.client.pause();
+    assert_auth_required_from(&s, &admin, "pause");
+
+    s.client.unpause();
+    assert_auth_required_from(&s, &admin, "unpause");
+
+    s.client.set_treasury(&Address::generate(&s.env));
+    assert_auth_required_from(&s, &admin, "set_treasury");
+
+    s.client.set_fee_bps(&100);
+    assert_auth_required_from(&s, &admin, "set_fee_bps");
+
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&new_admin);
+    assert_auth_required_from(&s, &admin, "propose_admin");
+
+    s.client.cancel_admin_proposal();
+    assert_auth_required_from(&s, &admin, "cancel_admin_proposal");
+}
+
+#[test]
+fn accept_admin_requires_pending_admin_auth() {
+    let s = setup();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&new_admin);
+
+    s.client.accept_admin();
+
+    // The proposed address, not the outgoing admin, has to accept.
+    assert_auth_required_from(&s, &new_admin, "accept_admin");
 }
