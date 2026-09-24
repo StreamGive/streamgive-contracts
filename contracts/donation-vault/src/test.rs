@@ -3,7 +3,15 @@
 use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::IntoVal;
+use soroban_sdk::{IntoVal, Val, Vec};
+
+/// The topics and data of the most recently published event, regardless of
+/// which contract emitted it — vault entry points always publish their own
+/// event last, after any token transfer, so this is the vault's event.
+fn last_event(env: &Env) -> (Vec<Val>, Val) {
+    let (_, topics, data) = env.events().all().last().unwrap();
+    (topics, data)
+}
 
 fn create_token<'a>(env: &Env, admin: &Address) -> (TokenClient<'a>, StellarAssetClient<'a>) {
     let sac = env.register_stellar_asset_contract_v2(admin.clone());
@@ -59,6 +67,14 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
 
     assert_eq!(s.token.balance(&s.donor), 0);
     assert_eq!(s.token.balance(&s.client.address), 1_000);
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("created"), stream_id).into_val(&s.env),
+            (s.donor.clone(), s.ngo.clone(), s.token.address.clone(), 1_000i128, 10i128)
+                .into_val(&s.env),
+        )
+    );
 
     // 50 seconds pass -> 10/s * 50 = 500 should be withdrawable.
     s.env.ledger().with_mut(|l| l.timestamp += 50);
@@ -66,6 +82,13 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
     let withdrawn = s.client.withdraw(&stream_id);
     assert_eq!(withdrawn, 500);
     assert_eq!(s.token.balance(&s.ngo), 500);
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("withdraw"), stream_id).into_val(&s.env),
+            500i128.into_val(&s.env),
+        )
+    );
 
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 500);
@@ -78,6 +101,13 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
     // 200 more settles to the NGO on cancel; the untouched 300 refunds to the donor.
     assert_eq!(s.token.balance(&s.ngo), 700);
     assert_eq!(s.token.balance(&s.donor), 300);
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("cancel"), stream_id).into_val(&s.env),
+            (200i128, 300i128).into_val(&s.env),
+        )
+    );
 
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 0);
@@ -101,6 +131,13 @@ fn top_up_and_modify_rate_settle_before_changing() {
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 1_400); // 1000 - 100 accrued + 500 top-up
     assert_eq!(stream.rate, 10);
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("topup"), stream_id).into_val(&s.env),
+            500i128.into_val(&s.env),
+        )
+    );
 
     s.env.ledger().with_mut(|l| l.timestamp += 5); // 50 more accrues at the old rate
 
@@ -110,6 +147,13 @@ fn top_up_and_modify_rate_settle_before_changing() {
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.rate, 20);
     assert_eq!(stream.balance, 1_350); // 1400 - 50
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("ratemod"), stream_id).into_val(&s.env),
+            20i128.into_val(&s.env),
+        )
+    );
 }
 
 #[test]
@@ -160,9 +204,23 @@ fn propose_then_accept_admin_transfers_control() {
     s.client.propose_admin(&new_admin);
     // Admin hasn't changed yet — only proposed.
     assert_eq!(s.client.admin(), old_admin);
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("propadmin"),).into_val(&s.env),
+            new_admin.into_val(&s.env),
+        )
+    );
 
     s.client.accept_admin();
     assert_eq!(s.client.admin(), new_admin);
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("acptadmin"),).into_val(&s.env),
+            new_admin.into_val(&s.env),
+        )
+    );
 
     // The new admin can act as admin.
     let treasury = Address::generate(&s.env);
@@ -252,6 +310,13 @@ fn pause_blocks_create_but_not_cancel() {
 
     s.client.pause();
     assert!(s.client.paused());
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("pause"),).into_val(&s.env),
+            ().into_val(&s.env),
+        )
+    );
 
     let result = s
         .client
@@ -271,6 +336,13 @@ fn unpause_restores_normal_operation() {
     s.client.pause();
     s.client.unpause();
     assert!(!s.client.paused());
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("unpause"),).into_val(&s.env),
+            ().into_val(&s.env),
+        )
+    );
 
     let stream_id = s
         .client
