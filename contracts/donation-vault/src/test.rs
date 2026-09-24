@@ -2,9 +2,11 @@
 
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
-use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
+use soroban_sdk::testutils::{
+    Address as _, AuthorizedFunction, Ledger, MockAuth, MockAuthInvoke,
+};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{IntoVal, Val, Vec};
+use soroban_sdk::{IntoVal, Symbol, Val, Vec};
 
 /// The topics and data of the most recently published event, regardless of
 /// which contract emitted it — vault entry points always publish their own
@@ -844,4 +846,137 @@ fn admin_writes_bump_instance_ttl() {
     age_past_thresholds(&s, None);
     s.client.accept_admin();
     assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT);
+}
+
+/// Asserts that the last top-level call required auth from exactly one
+/// address, `expected`, and that it was for `fn_name` on the vault.
+/// mock_all_auths() lets any require_auth pass, so without this a
+/// require_auth removed or moved to the wrong address would go unnoticed.
+fn assert_auth_required_from(s: &Setup, expected: &Address, fn_name: &str) {
+    let auths = s.env.auths();
+    assert_eq!(auths.len(), 1, "expected exactly one authorizer");
+
+    let (address, invocation) = &auths[0];
+    assert_eq!(address, expected);
+    match &invocation.function {
+        AuthorizedFunction::Contract((contract, function, _)) => {
+            assert_eq!(contract, &s.client.address);
+            assert_eq!(function, &Symbol::new(&s.env, fn_name));
+        }
+        _ => panic!("expected a contract invocation"),
+    }
+}
+
+#[test]
+fn create_stream_requires_donor_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    s.client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    assert_auth_required_from(&s, &s.donor, "create_stream");
+}
+
+#[test]
+fn withdraw_requires_ngo_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    s.client.withdraw(&stream_id);
+
+    assert_auth_required_from(&s, &s.ngo, "withdraw");
+}
+
+#[test]
+fn cancel_stream_requires_donor_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.client.cancel_stream(&stream_id);
+
+    assert_auth_required_from(&s, &s.donor, "cancel_stream");
+}
+
+#[test]
+fn top_up_requires_donor_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_500);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.client.top_up(&stream_id, &500);
+
+    assert_auth_required_from(&s, &s.donor, "top_up");
+}
+
+#[test]
+fn modify_rate_requires_donor_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.client.modify_rate(&stream_id, &20);
+
+    assert_auth_required_from(&s, &s.donor, "modify_rate");
+}
+
+#[test]
+fn extend_stream_requires_no_auth() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    s.client.extend_stream(&stream_id);
+
+    assert!(s.env.auths().is_empty());
+}
+
+#[test]
+fn admin_entry_points_require_admin_auth() {
+    let s = setup();
+    let admin = s.client.admin();
+
+    s.client.pause();
+    assert_auth_required_from(&s, &admin, "pause");
+
+    s.client.unpause();
+    assert_auth_required_from(&s, &admin, "unpause");
+
+    s.client.set_treasury(&Address::generate(&s.env));
+    assert_auth_required_from(&s, &admin, "set_treasury");
+
+    s.client.set_fee_bps(&100);
+    assert_auth_required_from(&s, &admin, "set_fee_bps");
+
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&new_admin);
+    assert_auth_required_from(&s, &admin, "propose_admin");
+
+    s.client.cancel_admin_proposal();
+    assert_auth_required_from(&s, &admin, "cancel_admin_proposal");
+}
+
+#[test]
+fn accept_admin_requires_pending_admin_auth() {
+    let s = setup();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&new_admin);
+
+    s.client.accept_admin();
+
+    // The proposed address, not the outgoing admin, has to accept.
+    assert_auth_required_from(&s, &new_admin, "accept_admin");
 }
