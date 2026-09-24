@@ -20,7 +20,10 @@ mod math;
 /// by `create_stream`, and never changes; `last_update` moves forward on
 /// every checkpoint (withdraw, cancel, top-up, or rate change).
 #[contracttype]
-#[derive(Clone)]
+// Debug and PartialEq let tests assert_eq! on a try_* call’s full
+// Result<Result<Stream, _>, _> rather than unwrapping it by hand first,
+// and compare a whole stream at once instead of field by field.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Stream {
     pub donor: Address,
     pub ngo: Address,

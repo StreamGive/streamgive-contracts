@@ -418,6 +418,56 @@ fn cancel_stream_splits_protocol_fee_on_accrued_but_not_on_refund() {
 }
 
 #[test]
+fn small_payout_rounds_protocol_fee_down_to_zero() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&500); // 5%
+
+    // 19 units at 5% is 0.95, and the fee is computed with integer
+    // division, so it truncates to nothing.
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &19);
+    s.env.ledger().with_mut(|l| l.timestamp += 1); // 19 accrues
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 19);
+
+    // The rounding favours the NGO: it keeps the whole payout rather than
+    // the treasury rounding its cut up to 1.
+    assert_eq!(s.token.balance(&s.ngo), 19);
+    assert_eq!(s.token.balance(&treasury), 0);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.withdrawn, 19);
+}
+
+#[test]
+fn protocol_fee_becomes_nonzero_at_the_rounding_boundary() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&500); // 5%
+
+    // 20 is the smallest payout at 5% that leaves a whole unit of fee, so
+    // it pins the other side of the boundary that 19 truncates below.
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &20);
+    s.env.ledger().with_mut(|l| l.timestamp += 1); // 20 accrues
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 20);
+    assert_eq!(s.token.balance(&treasury), 1);
+    assert_eq!(s.token.balance(&s.ngo), 19);
+}
+
+#[test]
 fn set_fee_bps_rejects_over_cap() {
     let s = setup();
     let result = s.client.try_set_fee_bps(&1_001);
@@ -520,4 +570,127 @@ fn cancel_stream_twice_is_harmless() {
     assert_eq!(stream.balance, 0);
     assert_eq!(stream.rate, 0);
     assert_eq!(stream.withdrawn, 500);
+}
+
+#[test]
+fn modify_rate_rejects_non_positive_rate() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    let result = s.client.try_modify_rate(&stream_id, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    let result = s.client.try_modify_rate(&stream_id, &-1);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // A rejected call settles nothing and changes nothing: pausing a
+    // stream goes through cancel_stream, not a zero rate.
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.rate, 10);
+    assert_eq!(stream.balance, 1_000);
+    assert_eq!(stream.withdrawn, 0);
+}
+
+#[test]
+fn modify_rate_on_unknown_stream_fails() {
+    let s = setup();
+
+    let result = s.client.try_modify_rate(&999, &10);
+    assert_eq!(result, Err(Ok(Error::StreamNotFound)));
+}
+
+#[test]
+fn modify_rate_checks_the_rate_before_the_stream_id() {
+    let s = setup();
+
+    // Both arguments are bad. The rate is validated before the stream is
+    // looked up, so the caller gets InvalidAmount rather than
+    // StreamNotFound — worth pinning so the order can't quietly flip.
+    let result = s.client.try_modify_rate(&999, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn top_up_rejects_non_positive_amount() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_500);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    let result = s.client.try_top_up(&stream_id, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    let result = s.client.try_top_up(&stream_id, &-100);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // top_up settles accrued funds and pulls tokens from the donor, so a
+    // rejected call has to leave both the stream and the balances alone.
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 1_000);
+    assert_eq!(stream.withdrawn, 0);
+    assert_eq!(s.token.balance(&s.donor), 500);
+    assert_eq!(s.token.balance(&s.ngo), 0);
+}
+
+#[test]
+fn top_up_on_unknown_stream_fails() {
+    let s = setup();
+
+    let result = s.client.try_top_up(&999, &100);
+    assert_eq!(result, Err(Ok(Error::StreamNotFound)));
+}
+
+#[test]
+fn top_up_checks_the_amount_before_the_stream_id() {
+    let s = setup();
+
+    // Both arguments are bad. The amount is validated before the stream is
+    // looked up, so the caller gets InvalidAmount rather than
+    // StreamNotFound — worth pinning so the order can't quietly flip.
+    let result = s.client.try_top_up(&999, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn get_stream_on_unknown_id_fails() {
+    let s = setup();
+
+    // Debug on Stream is what lets assert_eq! take the whole
+    // Result<Result<Stream, _>, _> here instead of matching on it.
+    let result = s.client.try_get_stream(&999);
+    assert_eq!(result, Err(Ok(Error::StreamNotFound)));
+}
+
+#[test]
+fn create_stream_stores_every_field() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    s.env.ledger().with_mut(|l| l.timestamp = 12_345);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    // PartialEq on Stream lets one assertion cover the whole struct, so a
+    // newly added field can't slip in unchecked the way it would with a
+    // handful of per-field assertions.
+    assert_eq!(
+        s.client.get_stream(&stream_id),
+        Stream {
+            donor: s.donor.clone(),
+            ngo: s.ngo.clone(),
+            token: s.token.address.clone(),
+            rate: 10,
+            balance: 1_000,
+            withdrawn: 0,
+            created_at: 12_345,
+            last_update: 12_345,
+        }
+    );
 }
