@@ -16,8 +16,9 @@ mod math;
 /// A single donor -> NGO streaming donation.
 ///
 /// `balance` is the undrawn amount still deposited in the vault; `rate` is
-/// how much of it accrues to the NGO per second. Accrual math lands in a
-/// later commit — this is just the storage shape.
+/// how much of it accrues to the NGO per second. `created_at` is set once,
+/// by `create_stream`, and never changes; `last_update` moves forward on
+/// every checkpoint (withdraw, cancel, top-up, or rate change).
 #[contracttype]
 #[derive(Clone)]
 pub struct Stream {
@@ -27,6 +28,7 @@ pub struct Stream {
     pub rate: i128,
     pub balance: i128,
     pub withdrawn: i128,
+    pub created_at: u64,
     pub last_update: u64,
 }
 
@@ -557,6 +559,7 @@ impl DonationVault {
             .get(&DataKey::NextStreamId)
             .unwrap_or(0);
 
+        let now = env.ledger().timestamp();
         let stream = Stream {
             donor: donor.clone(),
             ngo: ngo.clone(),
@@ -564,7 +567,8 @@ impl DonationVault {
             rate,
             balance: deposit,
             withdrawn: 0,
-            last_update: env.ledger().timestamp(),
+            created_at: now,
+            last_update: now,
         };
 
         env.storage()
