@@ -380,6 +380,43 @@ fn withdraw_fails_for_non_ngo_caller() {
 }
 
 #[test]
+fn withdraw_and_cancel_on_fully_drained_stream_are_no_ops() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    // 100 seconds at 10/s would accrue 1_000, exactly draining the balance.
+    s.env.ledger().with_mut(|l| l.timestamp += 100);
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 1_000);
+    assert_eq!(s.token.balance(&s.ngo), 1_000);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 0);
+    assert_eq!(stream.withdrawn, 1_000);
+
+    // More time passes, but there's nothing left to accrue.
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    let result = s.client.try_withdraw(&stream_id);
+    assert_eq!(result, Err(Ok(Error::NothingToWithdraw)));
+
+    // Cancelling a drained stream settles and refunds nothing.
+    s.client.cancel_stream(&stream_id);
+    assert_eq!(s.token.balance(&s.ngo), 1_000);
+    assert_eq!(s.token.balance(&s.donor), 0);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 0);
+    assert_eq!(stream.rate, 0);
+    assert_eq!(stream.withdrawn, 1_000);
+}
+
+#[test]
 fn cancel_stream_twice_is_harmless() {
     let s = setup();
     s.token_admin.mint(&s.donor, &1_000);
