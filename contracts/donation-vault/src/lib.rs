@@ -370,6 +370,40 @@ impl DonationVault {
             .ok_or(Error::StreamNotFound)
     }
 
+    /// Reads back the number of streams ever created — the exclusive upper
+    /// bound on valid stream ids. Lets a client enumerate streams (ids `0`
+    /// through `stream_count() - 1`) or just show a running total, without
+    /// exposing the raw `NextStreamId` counter directly.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert_eq!(client.stream_count(), 0);
+    ///
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    /// assert_eq!(client.stream_count(), 1);
+    /// ```
+    pub fn stream_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::NextStreamId)
+            .unwrap_or(0)
+    }
+
     /// Read-only lookup of how much a stream has accrued to the NGO so far.
     /// Reuses the same math `withdraw` would use to pay out, but never
     /// mutates storage or moves funds — safe to call as often as needed.
