@@ -16,8 +16,9 @@ mod math;
 /// A single donor -> NGO streaming donation.
 ///
 /// `balance` is the undrawn amount still deposited in the vault; `rate` is
-/// how much of it accrues to the NGO per second. Accrual math lands in a
-/// later commit — this is just the storage shape.
+/// how much of it accrues to the NGO per second. `created_at` is set once,
+/// by `create_stream`, and never changes; `last_update` moves forward on
+/// every checkpoint (withdraw, cancel, top-up, or rate change).
 #[contracttype]
 #[derive(Clone)]
 pub struct Stream {
@@ -27,6 +28,7 @@ pub struct Stream {
     pub rate: i128,
     pub balance: i128,
     pub withdrawn: i128,
+    pub created_at: u64,
     pub last_update: u64,
 }
 
@@ -88,6 +90,20 @@ fn extend_stream_ttl(env: &Env, stream_id: u64) {
         STREAM_LIFETIME_THRESHOLD,
         STREAM_BUMP_AMOUNT,
     );
+}
+
+/// Reads the configured admin and requires their auth, failing with
+/// `Error::NotInitialized` if `init` hasn't been called yet. Shared by
+/// every admin-gated entry point so the same three steps aren't repeated
+/// at each call site.
+fn require_admin(env: &Env) -> Result<Address, Error> {
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(Error::NotInitialized)?;
+    admin.require_auth();
+    Ok(admin)
 }
 
 /// Returns `Err(Error::ContractPaused)` if an admin has paused the vault.
@@ -206,12 +222,7 @@ impl DonationVault {
     /// assert_eq!(client.admin(), admin);
     /// ```
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
 
         env.storage()
             .instance()
@@ -352,12 +363,7 @@ impl DonationVault {
     /// assert!(client.paused());
     /// ```
     pub fn pause(env: Env) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
         env.storage().instance().set(&DataKey::Paused, &true);
         extend_instance_ttl(&env);
         env.events().publish((symbol_short!("pause"),), ());
@@ -382,12 +388,7 @@ impl DonationVault {
     /// assert!(!client.paused());
     /// ```
     pub fn unpause(env: Env) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
         env.storage().instance().set(&DataKey::Paused, &false);
         extend_instance_ttl(&env);
         env.events().publish((symbol_short!("unpause"),), ());
@@ -434,12 +435,7 @@ impl DonationVault {
     /// assert_eq!(client.treasury(), Some(treasury));
     /// ```
     pub fn set_treasury(env: Env, treasury: Address) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         extend_instance_ttl(&env);
         Ok(())
@@ -487,12 +483,7 @@ impl DonationVault {
     /// assert!(result.is_err());
     /// ```
     pub fn set_fee_bps(env: Env, fee_bps: u32) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
         if fee_bps > MAX_FEE_BPS {
             return Err(Error::FeeTooHigh);
         }
@@ -568,6 +559,7 @@ impl DonationVault {
             .get(&DataKey::NextStreamId)
             .unwrap_or(0);
 
+        let now = env.ledger().timestamp();
         let stream = Stream {
             donor: donor.clone(),
             ngo: ngo.clone(),
@@ -575,7 +567,8 @@ impl DonationVault {
             rate,
             balance: deposit,
             withdrawn: 0,
-            last_update: env.ledger().timestamp(),
+            created_at: now,
+            last_update: now,
         };
 
         env.storage()

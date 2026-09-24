@@ -113,6 +113,29 @@ fn top_up_and_modify_rate_settle_before_changing() {
 }
 
 #[test]
+fn created_at_is_set_once_and_never_changes() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    let stream = s.client.get_stream(&stream_id);
+    let created_at = stream.created_at;
+    assert_eq!(created_at, stream.last_update);
+
+    // Withdraw, top-up, and modify_rate all move last_update forward, but
+    // none of them should touch created_at.
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+    s.client.withdraw(&stream_id);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.created_at, created_at);
+    assert_ne!(stream.last_update, created_at);
+}
+
+#[test]
 fn create_stream_rejects_non_positive_amounts() {
     let s = setup();
     s.token_admin.mint(&s.donor, &1_000);
@@ -293,6 +316,33 @@ fn withdraw_splits_protocol_fee_to_treasury() {
 
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.withdrawn, 500); // bookkeeping tracks the gross amount
+}
+
+#[test]
+fn cancel_stream_splits_protocol_fee_on_accrued_but_not_on_refund() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&500); // 5%
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 20); // 200 accrues
+
+    s.client.cancel_stream(&stream_id);
+
+    // 5% of the 200 accrued goes to the treasury; the rest settles to the NGO.
+    assert_eq!(s.token.balance(&treasury), 10);
+    assert_eq!(s.token.balance(&s.ngo), 190);
+    // The untouched 800 refunds to the donor in full — no fee on refunds.
+    assert_eq!(s.token.balance(&s.donor), 800);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 0);
+    assert_eq!(stream.withdrawn, 200); // bookkeeping tracks the gross accrued amount
 }
 
 #[test]

@@ -63,6 +63,20 @@ fn extend_ngo_ttl(env: &Env, owner: &Address) {
     );
 }
 
+/// Reads the configured admin and requires their auth, failing with
+/// `Error::NotInitialized` if `init` hasn't been called yet. Shared by
+/// every admin-gated entry point so the same three steps aren't repeated
+/// at each call site.
+fn require_admin(env: &Env) -> Result<Address, Error> {
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(Error::NotInitialized)?;
+    admin.require_auth();
+    Ok(admin)
+}
+
 #[contract]
 pub struct NgoRegistry;
 
@@ -207,12 +221,7 @@ impl NgoRegistry {
     /// assert!(client.get_ngo(&owner).verified);
     /// ```
     pub fn approve_ngo(env: Env, ngo_owner: Address) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
 
         let key = DataKey::Ngo(ngo_owner.clone());
         let mut ngo: Ngo = env
@@ -254,12 +263,7 @@ impl NgoRegistry {
     /// assert!(!client.get_ngo(&owner).verified);
     /// ```
     pub fn revoke_ngo(env: Env, ngo_owner: Address) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
+        require_admin(&env)?;
 
         let key = DataKey::Ngo(ngo_owner.clone());
         let mut ngo: Ngo = env
@@ -275,6 +279,37 @@ impl NgoRegistry {
         env.events()
             .publish((symbol_short!("revoked"), ngo_owner), ());
 
+        Ok(())
+    }
+
+    /// Bumps a registered NGO entry's storage TTL without changing
+    /// anything about it. Callable by anyone — a verified NGO that
+    /// `register`, `approve_ngo`, and `revoke_ngo` haven't touched in a
+    /// while would otherwise have its entry archived after 90 days, with
+    /// no other way to keep it alive.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    /// # use ngo_registry::{NgoRegistry, NgoRegistryClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(NgoRegistry, ());
+    /// # let client = NgoRegistryClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let owner = Address::generate(&env);
+    /// # let name = String::from_str(&env, "Example NGO");
+    /// # client.register(&owner, &name);
+    /// client.touch_ngo(&owner);
+    /// ```
+    pub fn touch_ngo(env: Env, owner: Address) -> Result<(), Error> {
+        if !env.storage().persistent().has(&DataKey::Ngo(owner.clone())) {
+            return Err(Error::NotRegistered);
+        }
+        extend_instance_ttl(&env);
+        extend_ngo_ttl(&env, &owner);
         Ok(())
     }
 }
