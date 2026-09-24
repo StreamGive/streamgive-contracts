@@ -272,6 +272,46 @@ impl DonationVault {
         Ok(())
     }
 
+    /// Withdraws a pending admin proposal, leaving nothing pending. Requires
+    /// the current admin's auth. Fails with `Error::NoPendingAdmin` if
+    /// `propose_admin` was never called, or the proposal was already
+    /// accepted or cancelled.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// let new_admin = Address::generate(&env);
+    /// client.propose_admin(&new_admin);
+    ///
+    /// // The admin changes their mind before it's accepted.
+    /// client.cancel_admin_proposal();
+    ///
+    /// // Nothing left to accept.
+    /// let result = client.try_accept_admin();
+    /// assert!(result.is_err());
+    /// ```
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
+        require_admin(&env)?;
+
+        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::NoPendingAdmin);
+        }
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        extend_instance_ttl(&env);
+
+        env.events().publish((symbol_short!("canceladm"),), ());
+
+        Ok(())
+    }
+
     /// Reads back a stream by id.
     ///
     /// # Examples
