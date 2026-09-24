@@ -201,6 +201,32 @@ impl DonationVault {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Reads back the address proposed by `propose_admin`, if any hasn't
+    /// yet been accepted or cancelled. Lets the proposed admin (or anyone
+    /// else) check whether there's something to accept without having to
+    /// watch for the `propadmin` event.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert_eq!(client.pending_admin(), None);
+    ///
+    /// let new_admin = Address::generate(&env);
+    /// client.propose_admin(&new_admin);
+    /// assert_eq!(client.pending_admin(), Some(new_admin));
+    /// ```
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
     /// Starts a two-step admin transfer by recording `new_admin` as pending.
     /// Requires the current admin's auth. Has no effect on who can act as
     /// admin until `accept_admin` is called by the proposed address.
