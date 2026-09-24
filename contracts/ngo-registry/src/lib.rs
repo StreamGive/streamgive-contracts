@@ -36,6 +36,8 @@ pub enum Error {
     NotInitialized = 2,
     AlreadyRegistered = 3,
     NotRegistered = 4,
+    /// The NGO has already been approved, so its name is locked.
+    AlreadyVerified = 5,
 }
 
 /// Approximate ledgers per day at a 5-second close time. Used to express
@@ -170,6 +172,54 @@ impl NgoRegistry {
 
         env.events()
             .publish((symbol_short!("register"), owner), name);
+
+        Ok(())
+    }
+
+    /// Changes the name on an NGO's own pending application, so a typo or
+    /// rename can be fixed without going through an admin. Requires the
+    /// owner's auth. Fails with `Error::NotRegistered` for an address with
+    /// no entry, and `Error::AlreadyVerified` once an admin has approved
+    /// it — the name an admin approved is the name that stays.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    /// # use ngo_registry::{NgoRegistry, NgoRegistryClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(NgoRegistry, ());
+    /// # let client = NgoRegistryClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let owner = Address::generate(&env);
+    /// client.register(&owner, &String::from_str(&env, "Exmaple NGO"));
+    ///
+    /// let fixed = String::from_str(&env, "Example NGO");
+    /// client.update_name(&owner, &fixed);
+    /// assert_eq!(client.get_ngo(&owner).name, fixed);
+    /// ```
+    pub fn update_name(env: Env, owner: Address, name: String) -> Result<(), Error> {
+        owner.require_auth();
+
+        let key = DataKey::Ngo(owner.clone());
+        let mut ngo: Ngo = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotRegistered)?;
+        if ngo.verified {
+            return Err(Error::AlreadyVerified);
+        }
+
+        ngo.name = name.clone();
+        env.storage().persistent().set(&key, &ngo);
+        extend_instance_ttl(&env);
+        extend_ngo_ttl(&env, &owner);
+
+        env.events()
+            .publish((symbol_short!("renamed"), owner), name);
 
         Ok(())
     }

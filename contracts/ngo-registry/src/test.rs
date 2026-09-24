@@ -2,7 +2,8 @@
 
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::{Address as _, AuthorizedFunction, Events as _, Ledger};
+use soroban_sdk::{IntoVal, Symbol};
 
 fn setup() -> (Env, NgoRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -197,6 +198,84 @@ fn revoke_ngo_bumps_instance_and_ngo_ttl() {
     age_past_thresholds(&env, &client, &owner);
 
     client.revoke_ngo(&owner);
+
+    assert_ttls_bumped(&env, &client, &owner);
+}
+
+#[test]
+fn update_name_changes_name_before_approval() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    client.register(&owner, &String::from_str(&env, "Red Crsos"));
+
+    let fixed = String::from_str(&env, "Red Cross");
+    client.update_name(&owner, &fixed);
+
+    assert_eq!(
+        client.get_ngo(&owner),
+        Ngo {
+            owner: owner.clone(),
+            name: fixed.clone(),
+            verified: false,
+        }
+    );
+
+    let (_, topics, data) = env.events().all().last().unwrap();
+    assert_eq!(topics, (symbol_short!("renamed"), owner).into_val(&env));
+    assert_eq!(data, fixed.into_val(&env));
+}
+
+#[test]
+fn update_name_after_approval_fails() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    let name = String::from_str(&env, "Red Cross");
+    client.register(&owner, &name);
+    client.approve_ngo(&owner);
+
+    let result = client.try_update_name(&owner, &String::from_str(&env, "Blue Cross"));
+    assert_eq!(result, Err(Ok(Error::AlreadyVerified)));
+    assert_eq!(client.get_ngo(&owner).name, name);
+}
+
+#[test]
+fn update_name_for_unregistered_ngo_fails() {
+    let (env, client, _admin) = setup();
+    let random = Address::generate(&env);
+
+    let result = client.try_update_name(&random, &String::from_str(&env, "Red Cross"));
+    assert_eq!(result, Err(Ok(Error::NotRegistered)));
+}
+
+#[test]
+fn update_name_requires_owner_auth() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    client.register(&owner, &String::from_str(&env, "Red Crsos"));
+
+    client.update_name(&owner, &String::from_str(&env, "Red Cross"));
+
+    let auths = env.auths();
+    assert_eq!(auths.len(), 1);
+    let (address, invocation) = &auths[0];
+    assert_eq!(address, &owner);
+    match &invocation.function {
+        AuthorizedFunction::Contract((contract, function, _)) => {
+            assert_eq!(contract, &client.address);
+            assert_eq!(function, &Symbol::new(&env, "update_name"));
+        }
+        _ => panic!("expected a contract invocation"),
+    }
+}
+
+#[test]
+fn update_name_bumps_instance_and_ngo_ttl() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    client.register(&owner, &String::from_str(&env, "Red Crsos"));
+    age_past_thresholds(&env, &client, &owner);
+
+    client.update_name(&owner, &String::from_str(&env, "Red Cross"));
 
     assert_ttls_bumped(&env, &client, &owner);
 }

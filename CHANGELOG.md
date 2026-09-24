@@ -25,6 +25,8 @@ This project does not yet follow a formal versioning scheme — each contract's
 - `ngo-registry`: NGO application/registration via `register`.
 - `ngo-registry`: admin-gated `approve_ngo`.
 - `ngo-registry`: admin-gated `revoke_ngo`.
+- `ngo-registry`: owner-gated `update_name` for fixing an application's
+  name before approval; rejected with `Error::AlreadyVerified` after.
 - Contract events for registry and vault state changes (see
   [`docs/EVENTS.md`](docs/EVENTS.md)).
 - `scripts/deploy-testnet.sh` for deploying both contracts to testnet.

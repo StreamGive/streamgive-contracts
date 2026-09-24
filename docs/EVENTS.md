@@ -30,6 +30,19 @@ Emitted by `register` when an NGO submits an application.
 The entry starts unverified (`verified: false`); look for a matching
 `approved` event for the same `owner` to know when it's live.
 
+### `renamed`
+
+Emitted by `update_name` when an NGO changes the name on its application
+before it has been approved.
+
+| | |
+|---|---|
+| Topics | `("renamed", owner: Address)` |
+| Data | `name: String` (the new name) |
+
+Once an `approved` event has been seen for an `owner`, no further
+`renamed` events can follow for it while it stays verified.
+
 ### `approved`
 
 Emitted by `approve_ngo` when an admin marks a registered NGO as verified.
