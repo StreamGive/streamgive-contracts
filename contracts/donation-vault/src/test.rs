@@ -613,3 +613,46 @@ fn modify_rate_checks_the_rate_before_the_stream_id() {
     let result = s.client.try_modify_rate(&999, &0);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
+
+#[test]
+fn top_up_rejects_non_positive_amount() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_500);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    let result = s.client.try_top_up(&stream_id, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    let result = s.client.try_top_up(&stream_id, &-100);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // top_up settles accrued funds and pulls tokens from the donor, so a
+    // rejected call has to leave both the stream and the balances alone.
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 1_000);
+    assert_eq!(stream.withdrawn, 0);
+    assert_eq!(s.token.balance(&s.donor), 500);
+    assert_eq!(s.token.balance(&s.ngo), 0);
+}
+
+#[test]
+fn top_up_on_unknown_stream_fails() {
+    let s = setup();
+
+    let result = s.client.try_top_up(&999, &100);
+    assert_eq!(result, Err(Ok(Error::StreamNotFound)));
+}
+
+#[test]
+fn top_up_checks_the_amount_before_the_stream_id() {
+    let s = setup();
+
+    // Both arguments are bad. The amount is validated before the stream is
+    // looked up, so the caller gets InvalidAmount rather than
+    // StreamNotFound — worth pinning so the order can't quietly flip.
+    let result = s.client.try_top_up(&999, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
