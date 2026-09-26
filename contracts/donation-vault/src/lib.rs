@@ -45,6 +45,7 @@ pub enum DataKey {
     Paused,
     Treasury,
     FeeBps,
+    MinDeposit,
 }
 
 #[contracterror]
@@ -197,6 +198,7 @@ impl DonationVault {
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::NextStreamId, &0u64);
+        env.storage().instance().set(&DataKey::MinDeposit, &0i128);
         extend_instance_ttl(&env);
         Ok(())
     }
@@ -668,6 +670,27 @@ impl DonationVault {
         env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
 
+    /// Sets the minimum deposit accepted for new streams. Admin-gated.
+    pub fn set_min_deposit(env: Env, min_deposit: i128) -> Result<(), Error> {
+        require_admin(&env)?;
+        if min_deposit < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MinDeposit, &min_deposit);
+        extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Returns the minimum deposit required for a new stream.
+    pub fn min_deposit(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinDeposit)
+            .unwrap_or(0)
+    }
+
     /// Opens a new stream: pulls `deposit` of `token` from the donor into the
     /// vault, to be released to the NGO at `rate` per second on withdrawal.
     ///
@@ -706,6 +729,14 @@ impl DonationVault {
         if deposit <= 0 || rate <= 0 {
             return Err(Error::InvalidAmount);
         }
+        let min_deposit: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinDeposit)
+            .unwrap_or(0);
+        if deposit < min_deposit {
+            return Err(Error::InvalidAmount);
+        }
 
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&donor, env.current_contract_address(), &deposit);
@@ -731,9 +762,7 @@ impl DonationVault {
         env.storage()
             .persistent()
             .set(&DataKey::Stream(stream_id), &stream);
-        let next_stream_id = stream_id
-            .checked_add(1)
-            .ok_or(Error::ArithmeticOverflow)?;
+        let next_stream_id = stream_id.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
         env.storage()
             .instance()
             .set(&DataKey::NextStreamId, &next_stream_id);
@@ -994,6 +1023,7 @@ impl DonationVault {
             .ok_or(Error::StreamNotFound)?;
 
         stream.donor.require_auth();
+        let old_rate = stream.rate;
 
         let now = env.ledger().timestamp();
         let elapsed = now.saturating_sub(stream.last_update);
@@ -1011,7 +1041,7 @@ impl DonationVault {
         extend_stream_ttl(&env, stream_id);
 
         env.events()
-            .publish((symbol_short!("ratemod"), stream_id), new_rate);
+            .publish((symbol_short!("ratemod"), stream_id), (old_rate, new_rate));
 
         Ok(())
     }
