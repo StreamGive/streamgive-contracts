@@ -176,6 +176,30 @@ impl NgoRegistry {
         Ok(())
     }
 
+    /// Removes the caller's unverified NGO application.
+    ///
+    /// Verified registrations are intentionally permanent until an admin
+    /// revokes verification.
+    pub fn unregister(env: Env, owner: Address) -> Result<(), Error> {
+        owner.require_auth();
+
+        let key = DataKey::Ngo(owner.clone());
+        let ngo: Ngo = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotRegistered)?;
+        if ngo.verified {
+            return Err(Error::AlreadyVerified);
+        }
+
+        env.storage().persistent().remove(&key);
+        extend_instance_ttl(&env);
+        env.events().publish((symbol_short!("unregist"), owner), ());
+
+        Ok(())
+    }
+
     /// Changes the name on an NGO's own pending application, so a typo or
     /// rename can be fixed without going through an admin. Requires the
     /// owner's auth. Fails with `Error::NotRegistered` for an address with
