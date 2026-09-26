@@ -668,6 +668,14 @@ impl DonationVault {
         env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
 
+    /// Returns the maximum protocol fee, in basis points.
+    ///
+    /// This is exposed on-chain so clients can present the contract's fee
+    /// ceiling without maintaining a separate off-chain copy.
+    pub fn max_fee_bps(_env: Env) -> u32 {
+        MAX_FEE_BPS
+    }
+
     /// Opens a new stream: pulls `deposit` of `token` from the donor into the
     /// vault, to be released to the NGO at `rate` per second on withdrawal.
     ///
