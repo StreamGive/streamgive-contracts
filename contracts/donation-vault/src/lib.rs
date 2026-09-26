@@ -170,6 +170,24 @@ fn pay_ngo(env: &Env, token_client: &token::Client, ngo: &Address, amount: i128)
     }
 }
 
+/// Settles the accrual accumulated since the stream's last checkpoint.
+///
+/// This is shared by every operation that changes a stream's balance or rate
+/// so payout accounting, checked arithmetic, and the checkpoint timestamp
+/// cannot drift between entry points.
+fn settle(env: &Env, stream: &mut Stream, now: u64) -> Result<i128, Error> {
+    let elapsed = now.saturating_sub(stream.last_update);
+    let accrued = math::accrued(stream.rate, elapsed, stream.balance);
+    let token_client = token::Client::new(env, &stream.token);
+
+    if accrued > 0 {
+        pay_ngo(env, &token_client, &stream.ngo, accrued);
+        record_payout(stream, accrued)?;
+    }
+    stream.last_update = now;
+    Ok(accrued)
+}
+
 #[contract]
 pub struct DonationVault;
 
@@ -854,15 +872,9 @@ impl DonationVault {
         stream.donor.require_auth();
 
         let now = env.ledger().timestamp();
-        let elapsed = now.saturating_sub(stream.last_update);
-        let accrued = math::accrued(stream.rate, elapsed, stream.balance);
+        let accrued = settle(&env, &mut stream, now)?;
 
         let token_client = token::Client::new(&env, &stream.token);
-
-        if accrued > 0 {
-            pay_ngo(&env, &token_client, &stream.ngo, accrued);
-            record_payout(&mut stream, accrued)?;
-        }
 
         let refund = stream.balance;
         if refund > 0 {
@@ -871,7 +883,6 @@ impl DonationVault {
 
         stream.balance = 0;
         stream.rate = 0;
-        stream.last_update = now;
         env.storage().persistent().set(&key, &stream);
         extend_instance_ttl(&env);
         extend_stream_ttl(&env, stream_id);
@@ -928,13 +939,7 @@ impl DonationVault {
         let token_client = token::Client::new(&env, &stream.token);
 
         let now = env.ledger().timestamp();
-        let elapsed = now.saturating_sub(stream.last_update);
-        let accrued = math::accrued(stream.rate, elapsed, stream.balance);
-        if accrued > 0 {
-            pay_ngo(&env, &token_client, &stream.ngo, accrued);
-            record_payout(&mut stream, accrued)?;
-        }
-        stream.last_update = now;
+        let _accrued = settle(&env, &mut stream, now)?;
 
         token_client.transfer(&stream.donor, env.current_contract_address(), &amount);
         stream.balance = stream
@@ -996,14 +1001,7 @@ impl DonationVault {
         stream.donor.require_auth();
 
         let now = env.ledger().timestamp();
-        let elapsed = now.saturating_sub(stream.last_update);
-        let accrued = math::accrued(stream.rate, elapsed, stream.balance);
-        if accrued > 0 {
-            let token_client = token::Client::new(&env, &stream.token);
-            pay_ngo(&env, &token_client, &stream.ngo, accrued);
-            record_payout(&mut stream, accrued)?;
-        }
-        stream.last_update = now;
+        let _accrued = settle(&env, &mut stream, now)?;
         stream.rate = new_rate;
 
         env.storage().persistent().set(&key, &stream);
