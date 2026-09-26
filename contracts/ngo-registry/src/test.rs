@@ -1,9 +1,64 @@
 #![cfg(test)]
 
+extern crate std;
+
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{Address as _, AuthorizedFunction, Events as _, Ledger};
-use soroban_sdk::{IntoVal, Symbol};
+use soroban_sdk::xdr::{ContractEventBody, Limited, Limits, ScVal, ScVec, WriteXdr};
+use soroban_sdk::{IntoVal, Symbol, TryFromVal, Val, Vec};
+
+fn scval_to_bytes(scval: &ScVal) -> std::vec::Vec<u8> {
+    let buf = std::vec::Vec::new();
+    let mut limited = Limited::new(buf, Limits::none());
+    scval.write_xdr(&mut limited).expect("ScVal write_xdr");
+    limited.inner
+}
+
+/// Asserts that the last event emitted by `contract` matches expected topics and data.
+/// Filters by contract so token-transfer events don't interfere.
+/// Compares via XDR byte serialization because `Val` has no `PartialEq` in SDK 27.
+fn assert_last_event(
+    env: &Env,
+    contract: &Address,
+    expected_topics: impl IntoVal<Env, Vec<Val>>,
+    expected_data: impl IntoVal<Env, Val>,
+) {
+    let filtered = env.events().all().filter_by_contract(contract);
+    let raw = filtered.events();
+    let last = raw.last().expect("no events emitted by contract");
+
+    let (topics_xdr, data_xdr) = match &last.body {
+        ContractEventBody::V0(v0) => (&v0.topics, &v0.data),
+    };
+
+    let actual_topics_bytes = {
+        let scvec: ScVec = topics_xdr.clone().into();
+        scval_to_bytes(&ScVal::Vec(Some(scvec)))
+    };
+    let actual_data_bytes = scval_to_bytes(data_xdr);
+
+    let exp_topics: Vec<Val> = expected_topics.into_val(env);
+    let exp_data: Val = expected_data.into_val(env);
+
+    let expected_topics_bytes = {
+        let scval = ScVal::try_from_val(env, &exp_topics.to_val()).expect("topics Val into ScVal");
+        scval_to_bytes(&scval)
+    };
+    let expected_data_bytes = {
+        let scval = ScVal::try_from_val(env, &exp_data).expect("data Val into ScVal");
+        scval_to_bytes(&scval)
+    };
+
+    assert_eq!(
+        actual_topics_bytes, expected_topics_bytes,
+        "event topics mismatch"
+    );
+    assert_eq!(
+        actual_data_bytes, expected_data_bytes,
+        "event data mismatch"
+    );
+}
 
 fn setup() -> (Env, NgoRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -211,6 +266,12 @@ fn update_name_changes_name_before_approval() {
     let fixed = String::from_str(&env, "Red Cross");
     client.update_name(&owner, &fixed);
 
+    assert_last_event(
+        &env,
+        &client.address,
+        (symbol_short!("renamed"), owner.clone()),
+        fixed.clone(),
+    );
     assert_eq!(
         client.get_ngo(&owner),
         Ngo {
@@ -219,10 +280,6 @@ fn update_name_changes_name_before_approval() {
             verified: false,
         }
     );
-
-    let (_, topics, data) = env.events().all().last().unwrap();
-    assert_eq!(topics, (symbol_short!("renamed"), owner).into_val(&env));
-    assert_eq!(data, fixed.into_val(&env));
 }
 
 #[test]
