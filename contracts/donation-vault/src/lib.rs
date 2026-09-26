@@ -8,7 +8,7 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
 };
 
 mod math;
@@ -731,9 +731,7 @@ impl DonationVault {
         env.storage()
             .persistent()
             .set(&DataKey::Stream(stream_id), &stream);
-        let next_stream_id = stream_id
-            .checked_add(1)
-            .ok_or(Error::ArithmeticOverflow)?;
+        let next_stream_id = stream_id.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
         env.storage()
             .instance()
             .set(&DataKey::NextStreamId, &next_stream_id);
@@ -1013,6 +1011,30 @@ impl DonationVault {
         env.events()
             .publish((symbol_short!("ratemod"), stream_id), new_rate);
 
+        Ok(())
+    }
+
+    /// Replaces the contract's Wasm bytecode in place. Admin-only.
+    /// Lets a bug fix be deployed without changing the contract address,
+    /// preserving every existing stream and configuration value.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let new_wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+    /// client.upgrade(&new_wasm_hash);
+    /// ```
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        require_admin(&env)?;
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
     }
 }
