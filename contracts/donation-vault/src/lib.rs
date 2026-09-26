@@ -63,6 +63,8 @@ pub enum Error {
     /// leave its type's range. Returned instead of letting the release
     /// profile's overflow checks panic and abort the transaction.
     ArithmeticOverflow = 9,
+    AlreadyPaused = 10,
+    AlreadyUnpaused = 11,
 }
 
 /// Fee cap of 10%, enforced by `set_fee_bps` so the admin can never take
@@ -521,6 +523,14 @@ impl DonationVault {
     /// ```
     pub fn pause(env: Env) -> Result<(), Error> {
         require_admin(&env)?;
+        let already_paused = env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::Paused)
+            .unwrap_or(false);
+        if already_paused {
+            return Err(Error::AlreadyPaused);
+        }
         env.storage().instance().set(&DataKey::Paused, &true);
         extend_instance_ttl(&env);
         env.events().publish((symbol_short!("pause"),), ());
@@ -546,6 +556,14 @@ impl DonationVault {
     /// ```
     pub fn unpause(env: Env) -> Result<(), Error> {
         require_admin(&env)?;
+        let already_unpaused = !env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::Paused)
+            .unwrap_or(false);
+        if already_unpaused {
+            return Err(Error::AlreadyUnpaused);
+        }
         env.storage().instance().set(&DataKey::Paused, &false);
         extend_instance_ttl(&env);
         env.events().publish((symbol_short!("unpause"),), ());
