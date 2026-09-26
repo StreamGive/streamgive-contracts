@@ -209,6 +209,55 @@ fn create_stream_rejects_non_positive_amounts() {
 }
 
 #[test]
+fn empty_allowlist_keeps_stream_creation_unrestricted() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    assert!(s.client.is_token_allowed(&s.token.address));
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    assert_eq!(stream_id, 0);
+}
+
+#[test]
+fn populated_allowlist_enforces_token_gate_and_can_be_cleared() {
+    let s = setup();
+    let token_issuer_2 = Address::generate(&s.env);
+    let (other_token, other_token_admin) = create_token(&s.env, &token_issuer_2);
+    s.token_admin.mint(&s.donor, &1_000);
+    other_token_admin.mint(&s.donor, &1_000);
+
+    s.client.allow_token(&s.token.address);
+
+    assert!(s.client.is_token_allowed(&s.token.address));
+    assert!(!s.client.is_token_allowed(&other_token.address));
+
+    let result = s.client.try_create_stream(
+        &s.donor,
+        &s.ngo,
+        &other_token.address,
+        &1_000,
+        &10,
+    );
+    assert_eq!(result, Err(Ok(Error::TokenNotAllowed)));
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    assert_eq!(stream_id, 0);
+
+    s.client.disallow_token(&s.token.address);
+    assert!(s.client.is_token_allowed(&s.token.address));
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    assert_eq!(stream_id, 1);
+}
+
+#[test]
 fn propose_then_accept_admin_transfers_control() {
     let s = setup();
     let old_admin = s.client.admin();

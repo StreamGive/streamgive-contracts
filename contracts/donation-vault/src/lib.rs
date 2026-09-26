@@ -8,7 +8,7 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
 };
 
 mod math;
@@ -45,6 +45,7 @@ pub enum DataKey {
     Paused,
     Treasury,
     FeeBps,
+    TokenAllowlist,
 }
 
 #[contracterror]
@@ -63,6 +64,7 @@ pub enum Error {
     /// leave its type's range. Returned instead of letting the release
     /// profile's overflow checks panic and abort the transaction.
     ArithmeticOverflow = 9,
+    TokenNotAllowed = 10,
 }
 
 /// Fee cap of 10%, enforced by `set_fee_bps` so the admin can never take
@@ -125,6 +127,14 @@ fn require_not_paused(env: &Env) -> Result<(), Error> {
         return Err(Error::ContractPaused);
     }
     Ok(())
+}
+
+fn token_is_allowed(env: &Env, token: &Address) -> bool {
+    let allowlist: Option<Vec<Address>> = env.storage().instance().get(&DataKey::TokenAllowlist);
+    match allowlist {
+        Some(list) if !list.is_empty() => list.iter().any(|allowed| allowed == token.clone()),
+        _ => true,
+    }
 }
 
 /// Moves `amount` from a stream's `balance` into its `withdrawn` total,
@@ -668,6 +678,52 @@ impl DonationVault {
         env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
 
+    /// Adds a token to the optional admin-managed allowlist. Once any token
+    /// is allowlisted, only those tokens can be used to open streams.
+    pub fn allow_token(env: Env, token: Address) -> Result<(), Error> {
+        require_admin(&env)?;
+
+        let mut allowlist: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenAllowlist)
+            .unwrap_or_else(|| Vec::new(&env));
+        if !allowlist.iter().any(|allowed| allowed == token.clone()) {
+            allowlist.push_back(token);
+        }
+
+        env.storage().instance().set(&DataKey::TokenAllowlist, &allowlist);
+        extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Removes a token from the optional allowlist. When the final entry is
+    /// removed, the allowlist is empty and stream creation reverts to the
+    /// original unrestricted behavior.
+    pub fn disallow_token(env: Env, token: Address) -> Result<(), Error> {
+        require_admin(&env)?;
+
+        let allowlist: Option<Vec<Address>> = env.storage().instance().get(&DataKey::TokenAllowlist);
+        let Some(list) = allowlist else {
+            return Ok(());
+        };
+
+        let filtered: Vec<Address> = list
+            .iter()
+            .filter(|allowed| allowed != &&token)
+            .collect();
+
+        env.storage().instance().set(&DataKey::TokenAllowlist, &filtered);
+        extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Whether a token is accepted for new streams. Empty allowlists behave as
+    /// unrestricted, because there is no enforced gate at all.
+    pub fn is_token_allowed(env: Env, token: Address) -> bool {
+        token_is_allowed(&env, &token)
+    }
+
     /// Opens a new stream: pulls `deposit` of `token` from the donor into the
     /// vault, to be released to the NGO at `rate` per second on withdrawal.
     ///
@@ -705,6 +761,9 @@ impl DonationVault {
 
         if deposit <= 0 || rate <= 0 {
             return Err(Error::InvalidAmount);
+        }
+        if !token_is_allowed(&env, &token) {
+            return Err(Error::TokenNotAllowed);
         }
 
         let token_client = token::Client::new(&env, &token);
