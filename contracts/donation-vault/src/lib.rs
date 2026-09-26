@@ -8,7 +8,7 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
 };
 
 mod math;
@@ -392,6 +392,51 @@ impl DonationVault {
             .ok_or(Error::StreamNotFound)
     }
 
+    /// Reads back several streams by id in a single call, so a client can fetch
+    /// a page of streams without one RPC round-trip per id.
+    ///
+    /// Unlike `get_stream`, a missing id doesn't fail the call: it comes back
+    /// as `None` in the same position, letting a caller page through ids that
+    /// may include ones that were never created.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, token, Address, Env, Vec};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &2_000);
+    /// let a = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
+    /// let b = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &20);
+    ///
+    /// let mut ids = Vec::new(&env);
+    /// ids.push_back(a);
+    /// ids.push_back(999); // never created
+    /// ids.push_back(b);
+    ///
+    /// let streams = client.get_streams(&ids);
+    /// assert!(streams.get(0).unwrap().is_some());
+    /// assert!(streams.get(1).unwrap().is_none());
+    /// assert_eq!(streams.get(2).unwrap().unwrap().rate, 20);
+    /// ```
+    pub fn get_streams(env: Env, ids: Vec<u64>) -> Vec<Option<Stream>> {
+        let mut streams: Vec<Option<Stream>> = Vec::new(&env);
+        for id in ids.iter() {
+            streams.push_back(env.storage().persistent().get(&DataKey::Stream(id)));
+        }
+        streams
+    }
+
     /// Reads back the number of streams ever created — the exclusive upper
     /// bound on valid stream ids. Lets a client enumerate streams (ids `0`
     /// through `stream_count() - 1`) or just show a running total, without
@@ -731,9 +776,7 @@ impl DonationVault {
         env.storage()
             .persistent()
             .set(&DataKey::Stream(stream_id), &stream);
-        let next_stream_id = stream_id
-            .checked_add(1)
-            .ok_or(Error::ArithmeticOverflow)?;
+        let next_stream_id = stream_id.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
         env.storage()
             .instance()
             .set(&DataKey::NextStreamId, &next_stream_id);

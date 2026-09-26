@@ -3,17 +3,61 @@
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{
-    Address as _, AuthorizedFunction, Ledger, MockAuth, MockAuthInvoke,
+    Address as _, AuthorizedFunction, Events as _, Ledger, MockAuth, MockAuthInvoke,
 };
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{IntoVal, Symbol, Val, Vec};
+use soroban_sdk::xdr::{ContractEventBody, ScVal, ScVec};
+use soroban_sdk::{IntoVal, Symbol, TryFromVal, Val, Vec};
 
 /// The topics and data of the most recently published event, regardless of
 /// which contract emitted it — vault entry points always publish their own
 /// event last, after any token transfer, so this is the vault's event.
-fn last_event(env: &Env) -> (Vec<Val>, Val) {
-    let (_, topics, data) = env.events().all().last().unwrap();
-    (topics, data)
+///
+/// The SDK stopped implementing `PartialEq` on raw `Val`s, so this keeps the
+/// event in XDR form and, when compared against an expected
+/// `(topics, data)` pair, converts that pair to XDR too. That lets the
+/// existing `assert_eq!(last_event(..), (..).into_val(..))` assertions stay
+/// as they are.
+struct Event {
+    env: Env,
+    topics: ScVec,
+    data: ScVal,
+}
+
+impl core::fmt::Debug for Event {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Event")
+            .field("topics", &self.topics)
+            .field("data", &self.data)
+            .finish()
+    }
+}
+
+impl PartialEq<(Vec<Val>, Val)> for Event {
+    fn eq(&self, other: &(Vec<Val>, Val)) -> bool {
+        let topics: ScVec = (&other.0).into();
+        let data = ScVal::try_from_val(&self.env, &other.1).unwrap();
+        self.topics == topics && self.data == data
+    }
+}
+
+fn last_event(env: &Env) -> Event {
+    let events = env.events().all();
+    let event = events.events().last().unwrap();
+    let ContractEventBody::V0(body) = &event.body;
+    Event {
+        env: env.clone(),
+        topics: body.topics.clone().into(),
+        data: body.data.clone(),
+    }
+}
+
+fn stream_ids(env: &Env, ids: &[u64]) -> Vec<u64> {
+    let mut v = Vec::new(env);
+    for id in ids {
+        v.push_back(*id);
+    }
+    v
 }
 
 fn create_token<'a>(env: &Env, admin: &Address) -> (TokenClient<'a>, StellarAssetClient<'a>) {
@@ -77,14 +121,23 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
     let stream_id = s
         .client
         .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    // Capture the event before any other contract call: the SDK only exposes
+    // the events of the most recent invocation.
+    let created = last_event(&s.env);
 
     assert_eq!(s.token.balance(&s.donor), 0);
     assert_eq!(s.token.balance(&s.client.address), 1_000);
     assert_eq!(
-        last_event(&s.env),
+        created,
         (
             (symbol_short!("created"), stream_id).into_val(&s.env),
-            (s.donor.clone(), s.ngo.clone(), s.token.address.clone(), 1_000i128, 10i128)
+            (
+                s.donor.clone(),
+                s.ngo.clone(),
+                s.token.address.clone(),
+                1_000i128,
+                10i128
+            )
                 .into_val(&s.env),
         )
     );
@@ -93,10 +146,11 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
     s.env.ledger().with_mut(|l| l.timestamp += 50);
 
     let withdrawn = s.client.withdraw(&stream_id);
+    let withdraw = last_event(&s.env);
     assert_eq!(withdrawn, 500);
     assert_eq!(s.token.balance(&s.ngo), 500);
     assert_eq!(
-        last_event(&s.env),
+        withdraw,
         (
             (symbol_short!("withdraw"), stream_id).into_val(&s.env),
             500i128.into_val(&s.env),
@@ -110,12 +164,13 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
     // 20 more seconds pass, then the donor cancels.
     s.env.ledger().with_mut(|l| l.timestamp += 20);
     s.client.cancel_stream(&stream_id);
+    let cancel = last_event(&s.env);
 
     // 200 more settles to the NGO on cancel; the untouched 300 refunds to the donor.
     assert_eq!(s.token.balance(&s.ngo), 700);
     assert_eq!(s.token.balance(&s.donor), 300);
     assert_eq!(
-        last_event(&s.env),
+        cancel,
         (
             (symbol_short!("cancel"), stream_id).into_val(&s.env),
             (200i128, 300i128).into_val(&s.env),
@@ -139,13 +194,14 @@ fn top_up_and_modify_rate_settle_before_changing() {
     s.env.ledger().with_mut(|l| l.timestamp += 10); // 100 accrues
 
     s.client.top_up(&stream_id, &500);
+    let topup = last_event(&s.env);
 
     assert_eq!(s.token.balance(&s.ngo), 100);
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 1_400); // 1000 - 100 accrued + 500 top-up
     assert_eq!(stream.rate, 10);
     assert_eq!(
-        last_event(&s.env),
+        topup,
         (
             (symbol_short!("topup"), stream_id).into_val(&s.env),
             500i128.into_val(&s.env),
@@ -155,13 +211,14 @@ fn top_up_and_modify_rate_settle_before_changing() {
     s.env.ledger().with_mut(|l| l.timestamp += 5); // 50 more accrues at the old rate
 
     s.client.modify_rate(&stream_id, &20);
+    let ratemod = last_event(&s.env);
 
     assert_eq!(s.token.balance(&s.ngo), 150);
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.rate, 20);
     assert_eq!(stream.balance, 1_350); // 1400 - 50
     assert_eq!(
-        last_event(&s.env),
+        ratemod,
         (
             (symbol_short!("ratemod"), stream_id).into_val(&s.env),
             20i128.into_val(&s.env),
@@ -215,10 +272,11 @@ fn propose_then_accept_admin_transfers_control() {
     let new_admin = Address::generate(&s.env);
 
     s.client.propose_admin(&new_admin);
+    let proposed = last_event(&s.env);
     // Admin hasn't changed yet — only proposed.
     assert_eq!(s.client.admin(), old_admin);
     assert_eq!(
-        last_event(&s.env),
+        proposed,
         (
             (symbol_short!("propadmin"),).into_val(&s.env),
             new_admin.into_val(&s.env),
@@ -226,9 +284,10 @@ fn propose_then_accept_admin_transfers_control() {
     );
 
     s.client.accept_admin();
+    let accepted = last_event(&s.env);
     assert_eq!(s.client.admin(), new_admin);
     assert_eq!(
-        last_event(&s.env),
+        accepted,
         (
             (symbol_short!("acptadmin"),).into_val(&s.env),
             new_admin.into_val(&s.env),
@@ -322,9 +381,10 @@ fn pause_blocks_create_but_not_cancel() {
         .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
 
     s.client.pause();
+    let paused = last_event(&s.env);
     assert!(s.client.paused());
     assert_eq!(
-        last_event(&s.env),
+        paused,
         (
             (symbol_short!("pause"),).into_val(&s.env),
             ().into_val(&s.env),
@@ -348,9 +408,10 @@ fn unpause_restores_normal_operation() {
 
     s.client.pause();
     s.client.unpause();
+    let unpaused = last_event(&s.env);
     assert!(!s.client.paused());
     assert_eq!(
-        last_event(&s.env),
+        unpaused,
         (
             (symbol_short!("unpause"),).into_val(&s.env),
             ().into_val(&s.env),
@@ -678,6 +739,53 @@ fn get_stream_on_unknown_id_fails() {
     // Result<Result<Stream, _>, _> here instead of matching on it.
     let result = s.client.try_get_stream(&999);
     assert_eq!(result, Err(Ok(Error::StreamNotFound)));
+}
+
+#[test]
+fn get_streams_returns_mixed_existing_and_missing_ids() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &3_000);
+
+    let a = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    let b = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &2_000, &20);
+
+    let ids = stream_ids(&s.env, &[a, 999, b]);
+    let streams = s.client.get_streams(&ids);
+
+    // Results line up with the input ids, missing ones come back as None, and
+    // existing ones carry the full record.
+    assert_eq!(streams.len(), 3);
+    assert_eq!(streams.get(0).unwrap().unwrap(), s.client.get_stream(&a));
+    assert_eq!(streams.get(1), Some(None));
+    assert_eq!(streams.get(2).unwrap().unwrap(), s.client.get_stream(&b));
+}
+
+#[test]
+fn get_streams_returns_none_for_every_missing_id() {
+    let s = setup();
+
+    let ids = stream_ids(&s.env, &[7, 8]);
+    let streams = s.client.get_streams(&ids);
+
+    assert_eq!(streams.len(), 2);
+    assert_eq!(streams.get(0), Some(None));
+    assert_eq!(streams.get(1), Some(None));
+}
+
+#[test]
+fn get_streams_with_no_ids_is_empty_and_takes_no_auth() {
+    let s = setup();
+    let ids: Vec<u64> = Vec::new(&s.env);
+
+    let streams = s.client.get_streams(&ids);
+
+    assert_eq!(streams.len(), 0);
+    // Read-only: like get_stream, it needs no authorization.
+    assert!(s.env.auths().is_empty());
 }
 
 #[test]
