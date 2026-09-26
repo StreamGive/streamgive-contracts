@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{Address as _, AuthorizedFunction, Events as _, Ledger};
-use soroban_sdk::{IntoVal, Symbol};
+use soroban_sdk::{symbol_short, IntoVal, Symbol};
 
 fn setup() -> (Env, NgoRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -46,6 +46,24 @@ fn register_ngo_stores_unverified_entry() {
     assert_eq!(ngo.owner, owner);
     assert_eq!(ngo.name, name);
     assert!(!ngo.verified);
+}
+
+#[test]
+fn total_ngos_counts_successful_registrations_only() {
+    let (env, client, _admin) = setup();
+    let first_owner = Address::generate(&env);
+    let second_owner = Address::generate(&env);
+
+    assert_eq!(client.total_ngos(), 0);
+
+    client.register(&first_owner, &String::from_str(&env, "Red Cross"));
+    assert_eq!(client.total_ngos(), 1);
+
+    client.approve_ngo(&first_owner);
+    assert_eq!(client.total_ngos(), 1);
+
+    client.register(&second_owner, &String::from_str(&env, "Green Cross"));
+    assert_eq!(client.total_ngos(), 2);
 }
 
 #[test]
@@ -212,6 +230,17 @@ fn update_name_changes_name_before_approval() {
     client.update_name(&owner, &fixed);
 
     assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("renamed"), owner.clone()).into_val(&env),
+                fixed.clone().into_val(&env),
+            )
+        ]
+    );
+    assert_eq!(
         client.get_ngo(&owner),
         Ngo {
             owner: owner.clone(),
@@ -219,10 +248,6 @@ fn update_name_changes_name_before_approval() {
             verified: false,
         }
     );
-
-    let (_, topics, data) = env.events().all().last().unwrap();
-    assert_eq!(topics, (symbol_short!("renamed"), owner).into_val(&env));
-    assert_eq!(data, fixed.into_val(&env));
 }
 
 #[test]

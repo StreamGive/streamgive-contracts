@@ -38,5 +38,10 @@ This project does not yet follow a formal versioning scheme — each contract's
 - `donation-vault`: stream `balance`/`withdrawn` updates and the stream-id
   counter use checked arithmetic, returning `Error::ArithmeticOverflow`
   instead of panicking on overflow.
+- Both contracts migrated event declarations from deprecated
+  `Events::publish` to explicit `#[contractevent]` types. Topic names and
+  positional payload formats are declared in code and documented in
+  `docs/EVENTS.md`; consumers should update to the generated event types
+  before the next contract release.
 
 [Unreleased]: https://github.com/StreamGive/streamgive-contracts/compare/main...HEAD

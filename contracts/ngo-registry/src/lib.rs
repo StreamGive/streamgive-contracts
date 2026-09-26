@@ -1,15 +1,35 @@
 #![no_std]
-// soroban-sdk 27 deprecates Events::publish in favour of the
-// #[contractevent] macro. Migrating is not a lint cleanup: #[contractevent]
-// derives its own topic/data layout, and streamgive-backend's indexer
-// decodes the current layout by hand (topic[0] = symbol, topic[1] = id),
-// as does docs/EVENTS.md. Both repos have to move in the same change, so
-// it is tracked as its own issue rather than done under -D warnings here.
-#![allow(deprecated)]
-
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, String,
 };
+
+#[contractevent(topics = ["register"], data_format = "single-value")]
+pub struct RegisterEvent {
+    #[topic]
+    pub owner: Address,
+    pub name: String,
+}
+
+#[contractevent(topics = ["renamed"], data_format = "single-value")]
+pub struct RenamedEvent {
+    #[topic]
+    pub owner: Address,
+    pub name: String,
+}
+
+#[contractevent(topics = ["approved"], data_format = "single-value")]
+pub struct ApprovedEvent {
+    #[topic]
+    pub owner: Address,
+    pub data: (),
+}
+
+#[contractevent(topics = ["revoked"], data_format = "single-value")]
+pub struct RevokedEvent {
+    #[topic]
+    pub owner: Address,
+    pub data: (),
+}
 
 #[contracttype]
 // Debug and PartialEq let tests assert_eq! on a try_* call’s full
@@ -25,6 +45,7 @@ pub struct Ngo {
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    TotalNgos,
     Ngo(Address),
 }
 
@@ -38,6 +59,7 @@ pub enum Error {
     NotRegistered = 4,
     /// The NGO has already been approved, so its name is locked.
     AlreadyVerified = 5,
+    ArithmeticOverflow = 6,
 }
 
 /// Approximate ledgers per day at a 5-second close time. Used to express
@@ -105,6 +127,7 @@ impl NgoRegistry {
             return Err(Error::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::TotalNgos, &0u32);
         extend_instance_ttl(&env);
         Ok(())
     }
@@ -167,13 +190,29 @@ impl NgoRegistry {
             verified: false,
         };
         env.storage().persistent().set(&key, &ngo);
+        let total_ngos: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalNgos)
+            .unwrap_or(0);
+        let next_total = total_ngos.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalNgos, &next_total);
         extend_instance_ttl(&env);
         extend_ngo_ttl(&env, &owner);
 
-        env.events()
-            .publish((symbol_short!("register"), owner), name);
+        RegisterEvent { owner, name }.publish(&env);
 
         Ok(())
+    }
+
+    /// Returns the number of successfully registered NGOs.
+    pub fn total_ngos(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalNgos)
+            .unwrap_or(0)
     }
 
     /// Changes the name on an NGO's own pending application, so a typo or
@@ -218,8 +257,7 @@ impl NgoRegistry {
         extend_instance_ttl(&env);
         extend_ngo_ttl(&env, &owner);
 
-        env.events()
-            .publish((symbol_short!("renamed"), owner), name);
+        RenamedEvent { owner, name }.publish(&env);
 
         Ok(())
     }
@@ -284,8 +322,11 @@ impl NgoRegistry {
         extend_instance_ttl(&env);
         extend_ngo_ttl(&env, &ngo_owner);
 
-        env.events()
-            .publish((symbol_short!("approved"), ngo_owner), ());
+        ApprovedEvent {
+            owner: ngo_owner,
+            data: (),
+        }
+        .publish(&env);
 
         Ok(())
     }
@@ -326,8 +367,11 @@ impl NgoRegistry {
         extend_instance_ttl(&env);
         extend_ngo_ttl(&env, &ngo_owner);
 
-        env.events()
-            .publish((symbol_short!("revoked"), ngo_owner), ());
+        RevokedEvent {
+            owner: ngo_owner,
+            data: (),
+        }
+        .publish(&env);
 
         Ok(())
     }
