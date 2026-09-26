@@ -811,6 +811,25 @@ fn extend_stream_bumps_stream_ttl() {
 }
 
 #[test]
+fn extend_stream_on_cancelled_stream_still_bumps_ttl() {
+    let s = setup();
+    let stream_id = create_ttl_test_stream(&s);
+
+    // Cancel the stream — its storage entry stays in place (balance and
+    // rate are zeroed, but the key is never removed), so extend_stream
+    // must still be able to keep it alive for historical lookups.
+    s.client.cancel_stream(&stream_id);
+
+    // Age past both thresholds so we can confirm the bump is actually
+    // doing work, not just leaving the TTL where it already was.
+    age_past_thresholds(&s, Some(stream_id));
+
+    s.client.extend_stream(&stream_id);
+
+    assert_eq!(stream_ttl(&s, stream_id), STREAM_BUMP_AMOUNT);
+}
+
+#[test]
 fn admin_writes_bump_instance_ttl() {
     let s = setup();
     assert_eq!(instance_ttl(&s), INSTANCE_BUMP_AMOUNT); // from init
