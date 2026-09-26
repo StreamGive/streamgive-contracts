@@ -209,6 +209,31 @@ fn create_stream_rejects_non_positive_amounts() {
 }
 
 #[test]
+fn create_stream_errors_instead_of_defaulting_when_counter_is_missing() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    // `init` always sets NextStreamId, so this shouldn't happen in
+    // practice — but nothing enforces that, and if the counter were ever
+    // missing, silently treating it as `0` could collide with an existing
+    // stream. Simulate that by removing it directly from instance storage.
+    s.env.as_contract(&s.client.address, || {
+        s.env.storage().instance().remove(&DataKey::NextStreamId);
+    });
+
+    let result = s
+        .client
+        .try_create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    assert_eq!(result, Err(Ok(Error::StreamCounterMissing)));
+
+    // No stream should have been recorded under the fabricated id 0.
+    assert_eq!(
+        s.client.try_get_stream(&0u64),
+        Err(Ok(Error::StreamNotFound))
+    );
+}
+
+#[test]
 fn propose_then_accept_admin_transfers_control() {
     let s = setup();
     let old_admin = s.client.admin();
