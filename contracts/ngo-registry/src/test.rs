@@ -3,7 +3,47 @@
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{Address as _, AuthorizedFunction, Events as _, Ledger};
-use soroban_sdk::{IntoVal, Symbol};
+use soroban_sdk::xdr::{ContractEventBody, ScVal, ScVec};
+use soroban_sdk::{IntoVal, Symbol, TryFromVal, Val, Vec};
+
+/// The topics and data of the most recently published event.
+///
+/// The SDK stopped implementing `PartialEq` on raw `Val`s, so this keeps the
+/// event in XDR form and compares against an expected `(topics, data)` pair
+/// by converting that pair to XDR too.
+struct Event {
+    env: Env,
+    topics: ScVec,
+    data: ScVal,
+}
+
+impl core::fmt::Debug for Event {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Event")
+            .field("topics", &self.topics)
+            .field("data", &self.data)
+            .finish()
+    }
+}
+
+impl PartialEq<(Vec<Val>, Val)> for Event {
+    fn eq(&self, other: &(Vec<Val>, Val)) -> bool {
+        let topics: ScVec = (&other.0).into();
+        let data = ScVal::try_from_val(&self.env, &other.1).unwrap();
+        self.topics == topics && self.data == data
+    }
+}
+
+fn last_event(env: &Env) -> Event {
+    let events = env.events().all();
+    let event = events.events().last().unwrap();
+    let ContractEventBody::V0(body) = &event.body;
+    Event {
+        env: env.clone(),
+        topics: body.topics.clone().into(),
+        data: body.data.clone(),
+    }
+}
 
 fn setup() -> (Env, NgoRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -210,6 +250,9 @@ fn update_name_changes_name_before_approval() {
 
     let fixed = String::from_str(&env, "Red Cross");
     client.update_name(&owner, &fixed);
+    // Capture the event before `get_ngo`, which would clear the SDK's
+    // most-recent-invocation event buffer.
+    let renamed = last_event(&env);
 
     assert_eq!(
         client.get_ngo(&owner),
@@ -220,9 +263,13 @@ fn update_name_changes_name_before_approval() {
         }
     );
 
-    let (_, topics, data) = env.events().all().last().unwrap();
-    assert_eq!(topics, (symbol_short!("renamed"), owner).into_val(&env));
-    assert_eq!(data, fixed.into_val(&env));
+    assert_eq!(
+        renamed,
+        (
+            (symbol_short!("renamed"), owner).into_val(&env),
+            fixed.into_val(&env),
+        )
+    );
 }
 
 #[test]
