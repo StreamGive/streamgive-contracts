@@ -2,7 +2,9 @@
 
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
-use soroban_sdk::testutils::{Address as _, AuthorizedFunction, Events as _, Ledger};
+use soroban_sdk::testutils::{
+    Address as _, AuthorizedFunction, Events as _, Ledger, MockAuth, MockAuthInvoke,
+};
 use soroban_sdk::{IntoVal, Symbol};
 
 fn setup() -> (Env, NgoRegistryClient<'static>, Address) {
@@ -211,6 +213,19 @@ fn update_name_changes_name_before_approval() {
     let fixed = String::from_str(&env, "Red Cross");
     client.update_name(&owner, &fixed);
 
+    // Events are cleared per top-level call; assert immediately after update_name.
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("renamed"), owner.clone()).into_val(&env),
+                fixed.clone().into_val(&env),
+            ),
+        ]
+    );
+
     assert_eq!(
         client.get_ngo(&owner),
         Ngo {
@@ -219,10 +234,6 @@ fn update_name_changes_name_before_approval() {
             verified: false,
         }
     );
-
-    let (_, topics, data) = env.events().all().last().unwrap();
-    assert_eq!(topics, (symbol_short!("renamed"), owner).into_val(&env));
-    assert_eq!(data, fixed.into_val(&env));
 }
 
 #[test]
@@ -290,4 +301,26 @@ fn touch_ngo_bumps_instance_and_ngo_ttl() {
     client.touch_ngo(&owner);
 
     assert_ttls_bumped(&env, &client, &owner);
+}
+
+// --- Upgrade entry point tests (issue #46) ---
+
+#[test]
+#[should_panic]
+fn upgrade_rejects_non_admin_caller() {
+    let (env, client, _admin) = setup();
+    let non_admin = Address::generate(&env);
+    let dummy_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+
+    // Only the non_admin authorises; upgrade requires the admin's auth.
+    env.mock_auths(&[MockAuth {
+        address: &non_admin,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "upgrade",
+            args: (dummy_hash.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.upgrade(&dummy_hash);
 }
