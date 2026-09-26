@@ -45,6 +45,7 @@ pub enum DataKey {
     Paused,
     Treasury,
     FeeBps,
+    MinDeposit,
 }
 
 #[contracterror]
@@ -63,6 +64,8 @@ pub enum Error {
     /// leave its type's range. Returned instead of letting the release
     /// profile's overflow checks panic and abort the transaction.
     ArithmeticOverflow = 9,
+    /// `deposit` was below the configured `min_deposit`.
+    DepositTooLow = 10,
 }
 
 /// Fee cap of 10%, enforced by `set_fee_bps` so the admin can never take
@@ -668,6 +671,60 @@ impl DonationVault {
         env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
 
+    /// Sets the minimum `deposit` accepted by `create_stream`, letting an
+    /// operator filter out dust streams without changing application-level
+    /// validation on every frontend that talks to the contract. Admin-gated.
+    /// Defaults to `0` (today's behavior) until set.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// client.set_min_deposit(&100);
+    /// assert_eq!(client.min_deposit(), 100);
+    /// ```
+    pub fn set_min_deposit(env: Env, min_deposit: i128) -> Result<(), Error> {
+        require_admin(&env)?;
+        if min_deposit < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MinDeposit, &min_deposit);
+        extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Reads back the configured minimum deposit. `0` until an admin sets
+    /// one.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert_eq!(client.min_deposit(), 0);
+    /// ```
+    pub fn min_deposit(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinDeposit)
+            .unwrap_or(0)
+    }
+
     /// Opens a new stream: pulls `deposit` of `token` from the donor into the
     /// vault, to be released to the NGO at `rate` per second on withdrawal.
     ///
@@ -705,6 +762,9 @@ impl DonationVault {
 
         if deposit <= 0 || rate <= 0 {
             return Err(Error::InvalidAmount);
+        }
+        if deposit < Self::min_deposit(env.clone()) {
+            return Err(Error::DepositTooLow);
         }
 
         let token_client = token::Client::new(&env, &token);

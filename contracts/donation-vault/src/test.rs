@@ -209,6 +209,38 @@ fn create_stream_rejects_non_positive_amounts() {
 }
 
 #[test]
+fn min_deposit_defaults_to_zero_and_does_not_block_small_deposits() {
+    let s = setup();
+    assert_eq!(s.client.min_deposit(), 0);
+
+    s.token_admin.mint(&s.donor, &1);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1, &1);
+    assert_eq!(s.client.get_stream(&stream_id).balance, 1);
+}
+
+#[test]
+fn create_stream_rejects_deposit_below_configured_minimum() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    s.client.set_min_deposit(&100);
+    assert_eq!(s.client.min_deposit(), 100);
+
+    let result = s
+        .client
+        .try_create_stream(&s.donor, &s.ngo, &s.token.address, &99, &10);
+    assert_eq!(result, Err(Ok(Error::DepositTooLow)));
+
+    // Exactly the minimum still succeeds.
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &100, &10);
+    assert_eq!(s.client.get_stream(&stream_id).balance, 100);
+}
+
+#[test]
 fn propose_then_accept_admin_transfers_control() {
     let s = setup();
     let old_admin = s.client.admin();
