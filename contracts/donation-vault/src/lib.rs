@@ -63,6 +63,9 @@ pub enum Error {
     /// leave its type's range. Returned instead of letting the release
     /// profile's overflow checks panic and abort the transaction.
     ArithmeticOverflow = 9,
+    /// `set_treasury` was given the vault's own address. Fees paid there
+    /// could never be moved out again.
+    InvalidTreasury = 10,
 }
 
 /// Fee cap of 10%, enforced by `set_fee_bps` so the admin can never take
@@ -576,6 +579,10 @@ impl DonationVault {
 
     /// Sets where the protocol fee (if any) gets paid. Admin-gated.
     ///
+    /// Fails with `Error::InvalidTreasury` if `treasury` is this contract's
+    /// own address: the vault has no way to spend from itself, so fees sent
+    /// there would be locked permanently.
+    ///
     /// # Examples
     ///
     /// ```rust,no_run
@@ -593,6 +600,9 @@ impl DonationVault {
     /// ```
     pub fn set_treasury(env: Env, treasury: Address) -> Result<(), Error> {
         require_admin(&env)?;
+        if treasury == env.current_contract_address() {
+            return Err(Error::InvalidTreasury);
+        }
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         extend_instance_ttl(&env);
         Ok(())
