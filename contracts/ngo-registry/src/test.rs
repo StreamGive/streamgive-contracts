@@ -125,6 +125,7 @@ fn revoke_unverified_ngo_fails_without_emitting_event() {
     let result = client.try_revoke_ngo(&owner);
 
     assert_eq!(result, Err(Ok(Error::NotVerified)));
+    assert!(env.events().all().events().is_empty());
     assert!(!client.get_ngo(&owner).verified);
 }
 
