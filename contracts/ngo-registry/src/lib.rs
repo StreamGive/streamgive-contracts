@@ -24,7 +24,9 @@ pub struct Ngo {
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// The address authorized to initialize and administer the registry.
     Admin,
+    /// The registry record keyed by an NGO owner's address.
     Ngo(Address),
 }
 

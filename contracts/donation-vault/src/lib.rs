@@ -38,12 +38,19 @@ pub struct Stream {
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// The address authorized to administer the vault.
     Admin,
+    /// The administrator proposed by the current admin but not yet accepted.
     PendingAdmin,
+    /// The next stream identifier to allocate.
     NextStreamId,
+    /// A donation stream keyed by its numeric identifier.
     Stream(u64),
+    /// Whether fund-moving operations are currently paused.
     Paused,
+    /// The address that receives protocol fees, when configured.
     Treasury,
+    /// The protocol fee in basis points.
     FeeBps,
 }
 
@@ -731,9 +738,7 @@ impl DonationVault {
         env.storage()
             .persistent()
             .set(&DataKey::Stream(stream_id), &stream);
-        let next_stream_id = stream_id
-            .checked_add(1)
-            .ok_or(Error::ArithmeticOverflow)?;
+        let next_stream_id = stream_id.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
         env.storage()
             .instance()
             .set(&DataKey::NextStreamId, &next_stream_id);
