@@ -3,17 +3,64 @@
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{
-    Address as _, AuthorizedFunction, Ledger, MockAuth, MockAuthInvoke,
+    Address as _, AuthorizedFunction, Events as _, Ledger, MockAuth, MockAuthInvoke,
 };
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{xdr, IntoVal, Symbol, TryFromVal, Val, Vec};
 
-/// The topics and data of the most recently published event, regardless of
-/// which contract emitted it — vault entry points always publish their own
-/// event last, after any token transfer, so this is the vault's event.
-fn last_event(env: &Env) -> (Vec<Val>, Val) {
-    let (_, topics, data) = env.events().all().last().unwrap();
-    (topics, data)
+/// The most recently published event, regardless of which contract emitted
+/// it — vault entry points always publish their own event last, after any
+/// token transfer, so this is the vault's event.
+///
+/// soroban-sdk 27 removed `PartialEq` from `Val`, so an emitted event can no
+/// longer be compared to an expected `(topics, data)` pair built with
+/// `into_val` directly. This wrapper lowers the expected pair to its XDR form
+/// and compares that against the event's raw XDR body instead, which keeps
+/// every call site's `assert_eq!(last_event(..), (..))` working unchanged.
+struct LastEvent {
+    env: Env,
+    body: xdr::ContractEventBody,
+}
+
+impl PartialEq<(Vec<Val>, Val)> for LastEvent {
+    fn eq(&self, other: &(Vec<Val>, Val)) -> bool {
+        let (expected_topics, expected_data) = other;
+        let xdr::ContractEventBody::V0(body) = &self.body;
+
+        if body.topics.len() as u32 != expected_topics.len() {
+            return false;
+        }
+        for (i, actual) in body.topics.iter().enumerate() {
+            let expected = match expected_topics.get(i as u32) {
+                Some(expected) => expected,
+                None => return false,
+            };
+            match xdr::ScVal::try_from_val(&self.env, &expected) {
+                Ok(expected) if actual == &expected => {}
+                _ => return false,
+            }
+        }
+
+        match xdr::ScVal::try_from_val(&self.env, expected_data) {
+            Ok(expected_data) => expected_data == body.data,
+            Err(_) => false,
+        }
+    }
+}
+
+impl core::fmt::Debug for LastEvent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self.body)
+    }
+}
+
+fn last_event(env: &Env) -> LastEvent {
+    let events = env.events().all();
+    let event = events.events().last().expect("no event was published");
+    LastEvent {
+        env: env.clone(),
+        body: event.body.clone(),
+    }
 }
 
 fn create_token<'a>(env: &Env, admin: &Address) -> (TokenClient<'a>, StellarAssetClient<'a>) {
@@ -78,13 +125,23 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
         .client
         .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
 
+    // SDK 27's `env.events().all()` only returns the most recent invocation's
+    // events, so snapshot this one before the balance reads below run again.
+    let created = last_event(&s.env);
+
     assert_eq!(s.token.balance(&s.donor), 0);
     assert_eq!(s.token.balance(&s.client.address), 1_000);
     assert_eq!(
-        last_event(&s.env),
+        created,
         (
             (symbol_short!("created"), stream_id).into_val(&s.env),
-            (s.donor.clone(), s.ngo.clone(), s.token.address.clone(), 1_000i128, 10i128)
+            (
+                s.donor.clone(),
+                s.ngo.clone(),
+                s.token.address.clone(),
+                1_000i128,
+                10i128
+            )
                 .into_val(&s.env),
         )
     );
@@ -93,10 +150,11 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
     s.env.ledger().with_mut(|l| l.timestamp += 50);
 
     let withdrawn = s.client.withdraw(&stream_id);
+    let withdrew = last_event(&s.env);
     assert_eq!(withdrawn, 500);
     assert_eq!(s.token.balance(&s.ngo), 500);
     assert_eq!(
-        last_event(&s.env),
+        withdrew,
         (
             (symbol_short!("withdraw"), stream_id).into_val(&s.env),
             500i128.into_val(&s.env),
@@ -110,12 +168,13 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
     // 20 more seconds pass, then the donor cancels.
     s.env.ledger().with_mut(|l| l.timestamp += 20);
     s.client.cancel_stream(&stream_id);
+    let cancelled = last_event(&s.env);
 
     // 200 more settles to the NGO on cancel; the untouched 300 refunds to the donor.
     assert_eq!(s.token.balance(&s.ngo), 700);
     assert_eq!(s.token.balance(&s.donor), 300);
     assert_eq!(
-        last_event(&s.env),
+        cancelled,
         (
             (symbol_short!("cancel"), stream_id).into_val(&s.env),
             (200i128, 300i128).into_val(&s.env),
@@ -139,13 +198,14 @@ fn top_up_and_modify_rate_settle_before_changing() {
     s.env.ledger().with_mut(|l| l.timestamp += 10); // 100 accrues
 
     s.client.top_up(&stream_id, &500);
+    let topped_up = last_event(&s.env);
 
     assert_eq!(s.token.balance(&s.ngo), 100);
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 1_400); // 1000 - 100 accrued + 500 top-up
     assert_eq!(stream.rate, 10);
     assert_eq!(
-        last_event(&s.env),
+        topped_up,
         (
             (symbol_short!("topup"), stream_id).into_val(&s.env),
             500i128.into_val(&s.env),
@@ -155,13 +215,14 @@ fn top_up_and_modify_rate_settle_before_changing() {
     s.env.ledger().with_mut(|l| l.timestamp += 5); // 50 more accrues at the old rate
 
     s.client.modify_rate(&stream_id, &20);
+    let rate_changed = last_event(&s.env);
 
     assert_eq!(s.token.balance(&s.ngo), 150);
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.rate, 20);
     assert_eq!(stream.balance, 1_350); // 1400 - 50
     assert_eq!(
-        last_event(&s.env),
+        rate_changed,
         (
             (symbol_short!("ratemod"), stream_id).into_val(&s.env),
             20i128.into_val(&s.env),
@@ -215,10 +276,11 @@ fn propose_then_accept_admin_transfers_control() {
     let new_admin = Address::generate(&s.env);
 
     s.client.propose_admin(&new_admin);
+    let proposed = last_event(&s.env);
     // Admin hasn't changed yet — only proposed.
     assert_eq!(s.client.admin(), old_admin);
     assert_eq!(
-        last_event(&s.env),
+        proposed,
         (
             (symbol_short!("propadmin"),).into_val(&s.env),
             new_admin.into_val(&s.env),
@@ -226,9 +288,10 @@ fn propose_then_accept_admin_transfers_control() {
     );
 
     s.client.accept_admin();
+    let accepted = last_event(&s.env);
     assert_eq!(s.client.admin(), new_admin);
     assert_eq!(
-        last_event(&s.env),
+        accepted,
         (
             (symbol_short!("acptadmin"),).into_val(&s.env),
             new_admin.into_val(&s.env),
@@ -322,9 +385,10 @@ fn pause_blocks_create_but_not_cancel() {
         .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
 
     s.client.pause();
+    let paused_evt = last_event(&s.env);
     assert!(s.client.paused());
     assert_eq!(
-        last_event(&s.env),
+        paused_evt,
         (
             (symbol_short!("pause"),).into_val(&s.env),
             ().into_val(&s.env),
@@ -348,9 +412,10 @@ fn unpause_restores_normal_operation() {
 
     s.client.pause();
     s.client.unpause();
+    let unpaused_evt = last_event(&s.env);
     assert!(!s.client.paused());
     assert_eq!(
-        last_event(&s.env),
+        unpaused_evt,
         (
             (symbol_short!("unpause"),).into_val(&s.env),
             ().into_val(&s.env),
@@ -395,12 +460,40 @@ fn withdraw_splits_protocol_fee_to_treasury() {
     s.env.ledger().with_mut(|l| l.timestamp += 50); // 500 accrues
 
     let withdrawn = s.client.withdraw(&stream_id);
-    assert_eq!(withdrawn, 500);
+    // The return value is the net payout — the 500 that accrued minus the
+    // 5% (25) sent to the treasury — not the gross accrued amount.
+    assert_eq!(withdrawn, 475);
     assert_eq!(s.token.balance(&treasury), 25);
     assert_eq!(s.token.balance(&s.ngo), 475);
 
     let stream = s.client.get_stream(&stream_id);
-    assert_eq!(stream.withdrawn, 500); // bookkeeping tracks the gross amount
+    assert_eq!(stream.withdrawn, 500); // bookkeeping still tracks the gross amount
+}
+
+#[test]
+fn withdraw_returns_net_after_protocol_fee() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&250); // 2.5%
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 40); // 400 accrues
+
+    let ngo_before = s.token.balance(&s.ngo);
+    let withdrawn = s.client.withdraw(&stream_id);
+
+    // The return value is exactly what the NGO received: 400 gross - 10 fee.
+    assert_eq!(withdrawn, 390);
+    assert_eq!(s.token.balance(&s.ngo) - ngo_before, withdrawn);
+    assert_eq!(s.token.balance(&treasury), 10);
+
+    // And the stream's bookkeeping still records the gross 400 as withdrawn.
+    assert_eq!(s.client.get_stream(&stream_id).withdrawn, 400);
 }
 
 #[test]
@@ -447,6 +540,7 @@ fn small_payout_rounds_protocol_fee_down_to_zero() {
     s.env.ledger().with_mut(|l| l.timestamp += 1); // 19 accrues
 
     let withdrawn = s.client.withdraw(&stream_id);
+    // The fee truncates to zero, so the net return equals the gross here.
     assert_eq!(withdrawn, 19);
 
     // The rounding favours the NGO: it keeps the whole payout rather than
@@ -475,7 +569,8 @@ fn protocol_fee_becomes_nonzero_at_the_rounding_boundary() {
     s.env.ledger().with_mut(|l| l.timestamp += 1); // 20 accrues
 
     let withdrawn = s.client.withdraw(&stream_id);
-    assert_eq!(withdrawn, 20);
+    // 20 gross - 1 fee: the return is net, unlike the 20 recorded as withdrawn.
+    assert_eq!(withdrawn, 19);
     assert_eq!(s.token.balance(&treasury), 1);
     assert_eq!(s.token.balance(&s.ngo), 19);
 }
@@ -485,6 +580,41 @@ fn set_fee_bps_rejects_over_cap() {
     let s = setup();
     let result = s.client.try_set_fee_bps(&1_001);
     assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+}
+
+#[test]
+fn set_fee_bps_emits_feeset_event_with_new_value() {
+    let s = setup();
+
+    s.client.set_fee_bps(&500);
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("feeset"),).into_val(&s.env),
+            500u32.into_val(&s.env),
+        )
+    );
+
+    // A second change emits the updated value, not the previous one.
+    s.client.set_fee_bps(&250);
+    assert_eq!(
+        last_event(&s.env),
+        (
+            (symbol_short!("feeset"),).into_val(&s.env),
+            250u32.into_val(&s.env),
+        )
+    );
+}
+
+#[test]
+fn rejected_fee_change_emits_nothing() {
+    let s = setup();
+
+    let result = s.client.try_set_fee_bps(&1_001);
+    assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+
+    // The rejected call must not publish a feeset event (or anything else).
+    assert!(s.env.events().all().events().is_empty());
 }
 
 #[test]
