@@ -90,6 +90,21 @@ the numeric code below (e.g. a failed `try_withdraw` surfacing `Error(5)`).
 | 6    | `ContractPaused`      | The admin has paused the vault; only `cancel_stream` still works.        |
 | 7    | `FeeTooHigh`          | `set_fee_bps` was called with a value above the 10% (1,000 bps) cap.     |
 | 8    | `NoPendingAdmin`      | `accept_admin` was called without a prior (or already-completed) `propose_admin`. |
+| 9    | `ArithmeticOverflow`  | A `balance`/`withdrawn` update or the `NextStreamId` counter would leave `i128`/`u64`'s range. |
+
+`ArithmeticOverflow` (code 9) is returned when a checked operation would
+leave its type's range. Balance bookkeeping (`balance` and `withdrawn` in
+`record_payout`), the `balance` top-up in `top_up`, and the `NextStreamId`
+counter in `create_stream` all use `checked_add` / `checked_sub`, so an
+out-of-range update fails with a typed error instead of wrapping — or
+trapping and aborting the transaction. Where clamping is the correct
+behaviour, the math saturates instead: `math::accrued` computes
+`rate.saturating_mul(elapsed)` and caps it at the remaining `balance`, every
+checkpoint reads elapsed time with `now.saturating_sub(last_update)` so an
+unmoved timestamp yields zero, and the protocol fee saturating-multiplies
+before being capped at the payout. The workspace release profile also keeps
+`overflow-checks = true`, so any operation that isn't explicitly guarded
+would trap rather than silently wrap.
 
 ### `ngo-registry`
 
