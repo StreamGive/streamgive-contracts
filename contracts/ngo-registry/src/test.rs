@@ -61,6 +61,43 @@ fn double_register_fails() {
 }
 
 #[test]
+fn register_rejects_name_over_max_length() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    // MAX_NGO_NAME_LEN (200) + 1 bytes.
+    let too_long = String::from_str(&env, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    let result = client.try_register(&owner, &too_long);
+
+    assert_eq!(result, Err(Ok(Error::NameTooLong)));
+    assert_eq!(client.try_get_ngo(&owner), Err(Ok(Error::NotRegistered)));
+}
+
+#[test]
+fn register_accepts_name_at_max_length() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    // Exactly MAX_NGO_NAME_LEN (200) bytes.
+    let at_limit = String::from_str(&env, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    client.register(&owner, &at_limit);
+
+    assert_eq!(client.get_ngo(&owner).name, at_limit);
+}
+
+#[test]
+fn update_name_rejects_name_over_max_length() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    client.register(&owner, &String::from_str(&env, "Red Cross"));
+    let too_long = String::from_str(&env, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    let result = client.try_update_name(&owner, &too_long);
+
+    assert_eq!(result, Err(Ok(Error::NameTooLong)));
+}
+
+#[test]
 fn get_unregistered_ngo_fails() {
     let (env, client, _admin) = setup();
     let random = Address::generate(&env);

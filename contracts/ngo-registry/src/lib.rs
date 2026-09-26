@@ -38,7 +38,15 @@ pub enum Error {
     NotRegistered = 4,
     /// The NGO has already been approved, so its name is locked.
     AlreadyVerified = 5,
+    /// `name` is longer than `MAX_NGO_NAME_LEN`.
+    NameTooLong = 6,
 }
+
+/// Upper bound on `Ngo.name`, in bytes. Persistent storage cost scales with
+/// what's stored, so without a cap a registration could inflate its own
+/// entry's storage footprint indefinitely. Comfortably fits a real
+/// organization name while keeping a single entry's storage bounded.
+const MAX_NGO_NAME_LEN: u32 = 200;
 
 /// Approximate ledgers per day at a 5-second close time. Used to express
 /// storage TTLs (which the network counts in ledgers, not wall time) in
@@ -156,6 +164,10 @@ impl NgoRegistry {
     pub fn register(env: Env, owner: Address, name: String) -> Result<(), Error> {
         owner.require_auth();
 
+        if name.len() > MAX_NGO_NAME_LEN {
+            return Err(Error::NameTooLong);
+        }
+
         let key = DataKey::Ngo(owner.clone());
         if env.storage().persistent().has(&key) {
             return Err(Error::AlreadyRegistered);
@@ -202,6 +214,10 @@ impl NgoRegistry {
     /// ```
     pub fn update_name(env: Env, owner: Address, name: String) -> Result<(), Error> {
         owner.require_auth();
+
+        if name.len() > MAX_NGO_NAME_LEN {
+            return Err(Error::NameTooLong);
+        }
 
         let key = DataKey::Ngo(owner.clone());
         let mut ngo: Ngo = env
