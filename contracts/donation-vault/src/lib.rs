@@ -13,6 +13,8 @@ use soroban_sdk::{
 
 mod math;
 
+use ngo_registry::NgoRegistryClient;
+
 /// A single donor -> NGO streaming donation.
 ///
 /// `balance` is the undrawn amount still deposited in the vault; `rate` is
@@ -45,6 +47,7 @@ pub enum DataKey {
     Paused,
     Treasury,
     FeeBps,
+    Registry,
 }
 
 #[contracterror]
@@ -63,6 +66,10 @@ pub enum Error {
     /// leave its type's range. Returned instead of letting the release
     /// profile's overflow checks panic and abort the transaction.
     ArithmeticOverflow = 9,
+    /// The NGO address passed to `create_stream` is not verified in the
+    /// configured ngo-registry. Only set when a registry address has been
+    /// stored via `set_registry`.
+    NgoNotVerified = 10,
 }
 
 /// Fee cap of 10%, enforced by `set_fee_bps` so the admin can never take
@@ -668,6 +675,52 @@ impl DonationVault {
         env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
 
+    /// Stores the address of the `ngo-registry` contract that
+    /// `create_stream` should consult to verify NGOs. Admin-only.
+    /// Once set, only NGOs whose `verified` flag is true in the registry
+    /// will be accepted as stream recipients.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// let registry = Address::generate(&env);
+    /// client.set_registry(&registry);
+    /// assert_eq!(client.registry(), Some(registry));
+    /// ```
+    pub fn set_registry(env: Env, registry: Address) -> Result<(), Error> {
+        require_admin(&env)?;
+        env.storage().instance().set(&DataKey::Registry, &registry);
+        extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Reads back the configured ngo-registry contract address, if any.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// assert_eq!(client.registry(), None);
+    /// ```
+    pub fn registry(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Registry)
+    }
+
     /// Opens a new stream: pulls `deposit` of `token` from the donor into the
     /// vault, to be released to the NGO at `rate` per second on withdrawal.
     ///
@@ -707,6 +760,23 @@ impl DonationVault {
             return Err(Error::InvalidAmount);
         }
 
+        // If a registry has been configured, verify the NGO is approved before
+        // pulling any funds from the donor.
+        if let Some(registry_addr) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::Registry)
+        {
+            let registry = NgoRegistryClient::new(&env, &registry_addr);
+            let ngo_entry = registry
+                .try_get_ngo(&ngo)
+                .map_err(|_| Error::NgoNotVerified)?
+                .map_err(|_| Error::NgoNotVerified)?;
+            if !ngo_entry.verified {
+                return Err(Error::NgoNotVerified);
+            }
+        }
+
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&donor, env.current_contract_address(), &deposit);
 
@@ -731,9 +801,7 @@ impl DonationVault {
         env.storage()
             .persistent()
             .set(&DataKey::Stream(stream_id), &stream);
-        let next_stream_id = stream_id
-            .checked_add(1)
-            .ok_or(Error::ArithmeticOverflow)?;
+        let next_stream_id = stream_id.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
         env.storage()
             .instance()
             .set(&DataKey::NextStreamId, &next_stream_id);

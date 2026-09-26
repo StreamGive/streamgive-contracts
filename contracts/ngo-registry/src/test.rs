@@ -211,6 +211,19 @@ fn update_name_changes_name_before_approval() {
     let fixed = String::from_str(&env, "Red Cross");
     client.update_name(&owner, &fixed);
 
+    // Assert event before get_ngo (a cross-contract call that resets the log).
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("renamed"), owner.clone()).into_val(&env),
+                fixed.clone().into_val(&env),
+            ),
+        ]
+    );
+
     assert_eq!(
         client.get_ngo(&owner),
         Ngo {
@@ -219,10 +232,6 @@ fn update_name_changes_name_before_approval() {
             verified: false,
         }
     );
-
-    let (_, topics, data) = env.events().all().last().unwrap();
-    assert_eq!(topics, (symbol_short!("renamed"), owner).into_val(&env));
-    assert_eq!(data, fixed.into_val(&env));
 }
 
 #[test]

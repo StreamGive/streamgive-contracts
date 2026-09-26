@@ -3,17 +3,25 @@
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{
-    Address as _, AuthorizedFunction, Ledger, MockAuth, MockAuthInvoke,
+    Address as _, AuthorizedFunction, Events as _, Ledger, MockAuth, MockAuthInvoke,
 };
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{IntoVal, Symbol};
 
-/// The topics and data of the most recently published event, regardless of
-/// which contract emitted it — vault entry points always publish their own
-/// event last, after any token transfer, so this is the vault's event.
-fn last_event(env: &Env) -> (Vec<Val>, Val) {
-    let (_, topics, data) = env.events().all().last().unwrap();
-    (topics, data)
+/// Asserts that the most recently published vault event matches the given
+/// topics and data. Filters by contract address so token transfer events
+/// emitted by the same top-level call don't interfere.
+fn assert_last_event(
+    s: &Setup,
+    topics: soroban_sdk::Vec<soroban_sdk::Val>,
+    data: soroban_sdk::Val,
+) {
+    assert!(
+        s.env.events().all().filter_by_contract(&s.client.address)
+            == soroban_sdk::vec![&s.env, (s.client.address.clone(), topics, data)],
+        "event mismatch: {:?}",
+        s.env.events().all(),
+    );
 }
 
 fn create_token<'a>(env: &Env, admin: &Address) -> (TokenClient<'a>, StellarAssetClient<'a>) {
@@ -78,30 +86,33 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
         .client
         .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
 
+    // Check event before any cross-contract call resets the log.
+    assert_last_event(
+        &s,
+        (symbol_short!("created"), stream_id).into_val(&s.env),
+        (
+            s.donor.clone(),
+            s.ngo.clone(),
+            s.token.address.clone(),
+            1_000i128,
+            10i128,
+        )
+            .into_val(&s.env),
+    );
     assert_eq!(s.token.balance(&s.donor), 0);
     assert_eq!(s.token.balance(&s.client.address), 1_000);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("created"), stream_id).into_val(&s.env),
-            (s.donor.clone(), s.ngo.clone(), s.token.address.clone(), 1_000i128, 10i128)
-                .into_val(&s.env),
-        )
-    );
 
     // 50 seconds pass -> 10/s * 50 = 500 should be withdrawable.
     s.env.ledger().with_mut(|l| l.timestamp += 50);
 
     let withdrawn = s.client.withdraw(&stream_id);
     assert_eq!(withdrawn, 500);
-    assert_eq!(s.token.balance(&s.ngo), 500);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("withdraw"), stream_id).into_val(&s.env),
-            500i128.into_val(&s.env),
-        )
+    assert_last_event(
+        &s,
+        (symbol_short!("withdraw"), stream_id).into_val(&s.env),
+        500i128.into_val(&s.env),
     );
+    assert_eq!(s.token.balance(&s.ngo), 500);
 
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 500);
@@ -112,15 +123,13 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
     s.client.cancel_stream(&stream_id);
 
     // 200 more settles to the NGO on cancel; the untouched 300 refunds to the donor.
+    assert_last_event(
+        &s,
+        (symbol_short!("cancel"), stream_id).into_val(&s.env),
+        (200i128, 300i128).into_val(&s.env),
+    );
     assert_eq!(s.token.balance(&s.ngo), 700);
     assert_eq!(s.token.balance(&s.donor), 300);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("cancel"), stream_id).into_val(&s.env),
-            (200i128, 300i128).into_val(&s.env),
-        )
-    );
 
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 0);
@@ -140,33 +149,29 @@ fn top_up_and_modify_rate_settle_before_changing() {
 
     s.client.top_up(&stream_id, &500);
 
+    assert_last_event(
+        &s,
+        (symbol_short!("topup"), stream_id).into_val(&s.env),
+        500i128.into_val(&s.env),
+    );
     assert_eq!(s.token.balance(&s.ngo), 100);
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 1_400); // 1000 - 100 accrued + 500 top-up
     assert_eq!(stream.rate, 10);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("topup"), stream_id).into_val(&s.env),
-            500i128.into_val(&s.env),
-        )
-    );
 
     s.env.ledger().with_mut(|l| l.timestamp += 5); // 50 more accrues at the old rate
 
     s.client.modify_rate(&stream_id, &20);
 
+    assert_last_event(
+        &s,
+        (symbol_short!("ratemod"), stream_id).into_val(&s.env),
+        20i128.into_val(&s.env),
+    );
     assert_eq!(s.token.balance(&s.ngo), 150);
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.rate, 20);
     assert_eq!(stream.balance, 1_350); // 1400 - 50
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("ratemod"), stream_id).into_val(&s.env),
-            20i128.into_val(&s.env),
-        )
-    );
 }
 
 #[test]
@@ -215,25 +220,21 @@ fn propose_then_accept_admin_transfers_control() {
     let new_admin = Address::generate(&s.env);
 
     s.client.propose_admin(&new_admin);
+    assert_last_event(
+        &s,
+        (symbol_short!("propadmin"),).into_val(&s.env),
+        new_admin.into_val(&s.env),
+    );
     // Admin hasn't changed yet — only proposed.
     assert_eq!(s.client.admin(), old_admin);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("propadmin"),).into_val(&s.env),
-            new_admin.into_val(&s.env),
-        )
-    );
 
     s.client.accept_admin();
-    assert_eq!(s.client.admin(), new_admin);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("acptadmin"),).into_val(&s.env),
-            new_admin.into_val(&s.env),
-        )
+    assert_last_event(
+        &s,
+        (symbol_short!("acptadmin"),).into_val(&s.env),
+        new_admin.into_val(&s.env),
     );
+    assert_eq!(s.client.admin(), new_admin);
 
     // The new admin can act as admin.
     let treasury = Address::generate(&s.env);
@@ -322,14 +323,12 @@ fn pause_blocks_create_but_not_cancel() {
         .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
 
     s.client.pause();
-    assert!(s.client.paused());
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("pause"),).into_val(&s.env),
-            ().into_val(&s.env),
-        )
+    assert_last_event(
+        &s,
+        (symbol_short!("pause"),).into_val(&s.env),
+        ().into_val(&s.env),
     );
+    assert!(s.client.paused());
 
     let result = s
         .client
@@ -348,14 +347,12 @@ fn unpause_restores_normal_operation() {
 
     s.client.pause();
     s.client.unpause();
-    assert!(!s.client.paused());
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("unpause"),).into_val(&s.env),
-            ().into_val(&s.env),
-        )
+    assert_last_event(
+        &s,
+        (symbol_short!("unpause"),).into_val(&s.env),
+        ().into_val(&s.env),
     );
+    assert!(!s.client.paused());
 
     let stream_id = s
         .client
@@ -1052,4 +1049,104 @@ fn accept_admin_requires_pending_admin_auth() {
 
     // The proposed address, not the outgoing admin, has to accept.
     assert_auth_required_from(&s, &new_admin, "accept_admin");
+}
+
+// --- NGO registry cross-contract verification tests (issue #39) ---
+
+/// Sets up a vault AND a registry in the same Env, links them via
+/// set_registry, and returns a client for both.
+fn setup_with_registry() -> (Setup<'static>, ngo_registry::NgoRegistryClient<'static>) {
+    let s = setup();
+
+    // Register the ngo-registry contract in the same test Env.
+    let registry_id = s.env.register(ngo_registry::NgoRegistry, ());
+    let registry_client = ngo_registry::NgoRegistryClient::new(&s.env, &registry_id);
+
+    let admin = s.client.admin();
+    registry_client.init(&admin);
+
+    // Point the vault at the registry.
+    s.client.set_registry(&registry_id);
+
+    (s, registry_client)
+}
+
+#[test]
+fn create_stream_succeeds_for_verified_ngo() {
+    let (s, registry) = setup_with_registry();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    // Register and verify the NGO.
+    registry.register(&s.ngo, &soroban_sdk::String::from_str(&s.env, "Red Cross"));
+    registry.approve_ngo(&s.ngo);
+
+    // Stream creation should succeed.
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    assert_eq!(s.client.get_stream(&stream_id).balance, 1_000);
+}
+
+#[test]
+fn create_stream_fails_for_unverified_ngo() {
+    let (s, registry) = setup_with_registry();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    // Register but do NOT approve the NGO (verified = false).
+    registry.register(&s.ngo, &soroban_sdk::String::from_str(&s.env, "Red Cross"));
+
+    let result = s
+        .client
+        .try_create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    assert_eq!(result, Err(Ok(Error::NgoNotVerified)));
+
+    // No funds should have left the donor.
+    assert_eq!(s.token.balance(&s.donor), 1_000);
+}
+
+#[test]
+fn create_stream_fails_for_unregistered_ngo() {
+    let (s, _registry) = setup_with_registry();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    // The NGO has no registry entry at all.
+    let result = s
+        .client
+        .try_create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    assert_eq!(result, Err(Ok(Error::NgoNotVerified)));
+
+    assert_eq!(s.token.balance(&s.donor), 1_000);
+}
+
+#[test]
+fn create_stream_skips_check_when_no_registry_set() {
+    // Without calling set_registry the vault behaves as before: any address
+    // is accepted.
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    assert_eq!(s.client.get_stream(&stream_id).balance, 1_000);
+}
+
+#[test]
+fn create_stream_fails_for_revoked_ngo() {
+    let (s, registry) = setup_with_registry();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    // Approve then revoke.
+    registry.register(&s.ngo, &soroban_sdk::String::from_str(&s.env, "Red Cross"));
+    registry.approve_ngo(&s.ngo);
+    registry.revoke_ngo(&s.ngo);
+
+    let result = s
+        .client
+        .try_create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    assert_eq!(result, Err(Ok(Error::NgoNotVerified)));
+
+    assert_eq!(s.token.balance(&s.donor), 1_000);
 }
