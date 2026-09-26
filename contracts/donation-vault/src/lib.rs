@@ -36,6 +36,14 @@ pub struct Stream {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Config {
+    pub paused: bool,
+    pub treasury: Option<Address>,
+    pub fee_bps: u32,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
@@ -572,6 +580,19 @@ impl DonationVault {
             .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
+    }
+
+    /// Reads back all admin-set configuration in one call.
+    pub fn get_config(env: Env) -> Config {
+        Config {
+            paused: env
+                .storage()
+                .instance()
+                .get(&DataKey::Paused)
+                .unwrap_or(false),
+            treasury: env.storage().instance().get(&DataKey::Treasury),
+            fee_bps: env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0),
+        }
     }
 
     /// Sets where the protocol fee (if any) gets paid. Admin-gated.
