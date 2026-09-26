@@ -8,6 +8,21 @@ platform for verified NGOs on Stellar.
 - `ngo-registry` — on-chain NGO application, verification, and registry
 - `donation-vault` — streaming donation vault (create / withdraw / cancel / modify streams)
 
+### Donation-vault admin transfer
+
+Admin changes use a two-step handshake:
+
+1. The current admin calls `propose_admin(new_admin)`, which records the
+   pending administrator without changing the active admin.
+2. The proposed address calls `accept_admin()` to complete the transfer.
+3. Either side can abort the pending transfer by calling
+   `cancel_admin_proposal()` before acceptance; the active admin remains
+   unchanged.
+
+Only the current admin can propose or cancel a transfer, and only the pending
+administrator can accept it. The current admin continues to control
+admin-gated operations until acceptance succeeds.
+
 ## Release profile
 
 The workspace `Cargo.toml`'s `[profile.release]` sets several non-default
