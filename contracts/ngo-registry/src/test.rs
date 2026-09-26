@@ -3,7 +3,40 @@
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{Address as _, AuthorizedFunction, Events as _, Ledger};
-use soroban_sdk::{IntoVal, Symbol};
+use soroban_sdk::{xdr, IntoVal, Symbol, TryFromVal, Val, Vec};
+
+/// Asserts that the most recently published event has the given topics and
+/// data.
+///
+/// Must be called immediately after the call that emits the event. In
+/// soroban-sdk 27 `Events::all()` returns only the events of the *last*
+/// contract invocation, so an intervening call (any `get_*` read) replaces
+/// the event list with that call's — usually empty — one before the
+/// assertion runs.
+///
+/// The SDK's `ContractEvents` compares against raw XDR and `Val` deliberately
+/// doesn't implement `PartialEq`, so the last event is rebuilt in XDR form and
+/// compared there. This mirrors how `soroban_sdk::testutils` itself compares
+/// events.
+fn assert_last_event(env: &Env, topics: Vec<Val>, data: Val) {
+    let all = env.events().all();
+    let last = all.events().last().expect("no event was published");
+
+    let topics_val: Val = topics.into_val(env);
+    let topics = match xdr::ScVal::try_from_val(env, &topics_val).unwrap() {
+        xdr::ScVal::Vec(Some(topics)) => topics.0,
+        _ => unreachable!("event topics always encode as a vector"),
+    };
+    let data = xdr::ScVal::try_from_val(env, &data).unwrap();
+
+    let expected = xdr::ContractEvent {
+        ext: xdr::ExtensionPoint::V0,
+        type_: xdr::ContractEventType::Contract,
+        contract_id: last.contract_id.clone(),
+        body: xdr::ContractEventBody::V0(xdr::ContractEventV0 { topics, data }),
+    };
+    assert_eq!(last, &expected);
+}
 
 fn setup() -> (Env, NgoRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -211,6 +244,12 @@ fn update_name_changes_name_before_approval() {
     let fixed = String::from_str(&env, "Red Cross");
     client.update_name(&owner, &fixed);
 
+    assert_last_event(
+        &env,
+        (symbol_short!("renamed"), owner.clone()).into_val(&env),
+        fixed.clone().into_val(&env),
+    );
+
     assert_eq!(
         client.get_ngo(&owner),
         Ngo {
@@ -219,10 +258,6 @@ fn update_name_changes_name_before_approval() {
             verified: false,
         }
     );
-
-    let (_, topics, data) = env.events().all().last().unwrap();
-    assert_eq!(topics, (symbol_short!("renamed"), owner).into_val(&env));
-    assert_eq!(data, fixed.into_val(&env));
 }
 
 #[test]

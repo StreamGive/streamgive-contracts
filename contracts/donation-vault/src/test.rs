@@ -3,17 +3,46 @@
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{
-    Address as _, AuthorizedFunction, Ledger, MockAuth, MockAuthInvoke,
+    Address as _, AuthorizedFunction, Events as _, Ledger, MockAuth, MockAuthInvoke,
 };
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{xdr, IntoVal, Symbol, TryFromVal, Val, Vec};
 
-/// The topics and data of the most recently published event, regardless of
-/// which contract emitted it — vault entry points always publish their own
-/// event last, after any token transfer, so this is the vault's event.
-fn last_event(env: &Env) -> (Vec<Val>, Val) {
-    let (_, topics, data) = env.events().all().last().unwrap();
-    (topics, data)
+/// Asserts that the most recently published event has the given topics and
+/// data.
+///
+/// Must be called immediately after the call that emits the event. In
+/// soroban-sdk 27 `Events::all()` returns only the events of the *last*
+/// contract invocation, so an intervening call (a `treasury()` read, a token
+/// `balance()`, ...) replaces the event list with that call's — usually empty
+/// — one before the assertion runs.
+///
+/// The contract always publishes its own event last — after any token
+/// transfer, which a token contract emits separately — so the last event is
+/// the vault's.
+///
+/// The SDK's `ContractEvents` compares against raw XDR and `Val` deliberately
+/// doesn't implement `PartialEq`, so the last event is rebuilt in XDR form and
+/// compared there. This mirrors how `soroban_sdk::testutils` itself compares
+/// events, and keeps each call site to just the expected topics and data.
+fn assert_last_event(env: &Env, topics: Vec<Val>, data: Val) {
+    let all = env.events().all();
+    let last = all.events().last().expect("no event was published");
+
+    let topics_val: Val = topics.into_val(env);
+    let topics = match xdr::ScVal::try_from_val(env, &topics_val).unwrap() {
+        xdr::ScVal::Vec(Some(topics)) => topics.0,
+        _ => unreachable!("event topics always encode as a vector"),
+    };
+    let data = xdr::ScVal::try_from_val(env, &data).unwrap();
+
+    let expected = xdr::ContractEvent {
+        ext: xdr::ExtensionPoint::V0,
+        type_: xdr::ContractEventType::Contract,
+        contract_id: last.contract_id.clone(),
+        body: xdr::ContractEventBody::V0(xdr::ContractEventV0 { topics, data }),
+    };
+    assert_eq!(last, &expected);
 }
 
 fn create_token<'a>(env: &Env, admin: &Address) -> (TokenClient<'a>, StellarAssetClient<'a>) {
@@ -78,30 +107,33 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
         .client
         .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
 
+    assert_last_event(
+        &s.env,
+        (symbol_short!("created"), stream_id).into_val(&s.env),
+        (
+            s.donor.clone(),
+            s.ngo.clone(),
+            s.token.address.clone(),
+            1_000i128,
+            10i128,
+        )
+            .into_val(&s.env),
+    );
+
     assert_eq!(s.token.balance(&s.donor), 0);
     assert_eq!(s.token.balance(&s.client.address), 1_000);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("created"), stream_id).into_val(&s.env),
-            (s.donor.clone(), s.ngo.clone(), s.token.address.clone(), 1_000i128, 10i128)
-                .into_val(&s.env),
-        )
-    );
 
     // 50 seconds pass -> 10/s * 50 = 500 should be withdrawable.
     s.env.ledger().with_mut(|l| l.timestamp += 50);
 
     let withdrawn = s.client.withdraw(&stream_id);
+    assert_last_event(
+        &s.env,
+        (symbol_short!("withdraw"), stream_id).into_val(&s.env),
+        500i128.into_val(&s.env),
+    );
     assert_eq!(withdrawn, 500);
     assert_eq!(s.token.balance(&s.ngo), 500);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("withdraw"), stream_id).into_val(&s.env),
-            500i128.into_val(&s.env),
-        )
-    );
 
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 500);
@@ -111,16 +143,15 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
     s.env.ledger().with_mut(|l| l.timestamp += 20);
     s.client.cancel_stream(&stream_id);
 
+    assert_last_event(
+        &s.env,
+        (symbol_short!("cancel"), stream_id).into_val(&s.env),
+        (200i128, 300i128).into_val(&s.env),
+    );
+
     // 200 more settles to the NGO on cancel; the untouched 300 refunds to the donor.
     assert_eq!(s.token.balance(&s.ngo), 700);
     assert_eq!(s.token.balance(&s.donor), 300);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("cancel"), stream_id).into_val(&s.env),
-            (200i128, 300i128).into_val(&s.env),
-        )
-    );
 
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 0);
@@ -140,33 +171,69 @@ fn top_up_and_modify_rate_settle_before_changing() {
 
     s.client.top_up(&stream_id, &500);
 
+    assert_last_event(
+        &s.env,
+        (symbol_short!("topup"), stream_id).into_val(&s.env),
+        500i128.into_val(&s.env),
+    );
+
     assert_eq!(s.token.balance(&s.ngo), 100);
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.balance, 1_400); // 1000 - 100 accrued + 500 top-up
     assert_eq!(stream.rate, 10);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("topup"), stream_id).into_val(&s.env),
-            500i128.into_val(&s.env),
-        )
-    );
 
     s.env.ledger().with_mut(|l| l.timestamp += 5); // 50 more accrues at the old rate
 
     s.client.modify_rate(&stream_id, &20);
 
+    assert_last_event(
+        &s.env,
+        (symbol_short!("ratemod"), stream_id).into_val(&s.env),
+        20i128.into_val(&s.env),
+    );
+
     assert_eq!(s.token.balance(&s.ngo), 150);
     let stream = s.client.get_stream(&stream_id);
     assert_eq!(stream.rate, 20);
     assert_eq!(stream.balance, 1_350); // 1400 - 50
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("ratemod"), stream_id).into_val(&s.env),
-            20i128.into_val(&s.env),
-        )
-    );
+}
+
+#[test]
+fn modify_rate_settles_elapsed_time_at_the_old_rate_only() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    // 30 seconds elapse under the initial 10/s rate, so 300 has accrued.
+    s.env.ledger().with_mut(|l| l.timestamp += 30);
+    assert_eq!(s.client.pending_accrual(&stream_id), 300);
+
+    // The counterfactual that makes this test meaningful: applying the new
+    // 20/s rate to the same 30 seconds would have been 600, not 300.
+    assert_eq!(super::math::accrued(20, 30, 1_000), 600);
+
+    s.client.modify_rate(&stream_id, &20);
+
+    // Exactly what accrued at the OLD rate settles before the new rate takes
+    // effect — a rate change never reaches back over already-elapsed time.
+    assert_eq!(s.token.balance(&s.ngo), 300);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.rate, 20);
+    assert_eq!(stream.balance, 700); // 1_000 - the 300 settled at the old rate
+    assert_eq!(stream.withdrawn, 300);
+
+    // Accrual after the change runs at the new rate: 5 seconds * 20/s = 100.
+    s.env.ledger().with_mut(|l| l.timestamp += 5);
+    assert_eq!(s.client.pending_accrual(&stream_id), 100);
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 100);
+    assert_eq!(s.token.balance(&s.ngo), 400);
+    assert_eq!(s.client.get_stream(&stream_id).balance, 600);
 }
 
 #[test]
@@ -215,25 +282,21 @@ fn propose_then_accept_admin_transfers_control() {
     let new_admin = Address::generate(&s.env);
 
     s.client.propose_admin(&new_admin);
+    assert_last_event(
+        &s.env,
+        (symbol_short!("propadmin"),).into_val(&s.env),
+        new_admin.clone().into_val(&s.env),
+    );
     // Admin hasn't changed yet — only proposed.
     assert_eq!(s.client.admin(), old_admin);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("propadmin"),).into_val(&s.env),
-            new_admin.into_val(&s.env),
-        )
-    );
 
     s.client.accept_admin();
-    assert_eq!(s.client.admin(), new_admin);
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("acptadmin"),).into_val(&s.env),
-            new_admin.into_val(&s.env),
-        )
+    assert_last_event(
+        &s.env,
+        (symbol_short!("acptadmin"),).into_val(&s.env),
+        new_admin.clone().into_val(&s.env),
     );
+    assert_eq!(s.client.admin(), new_admin);
 
     // The new admin can act as admin.
     let treasury = Address::generate(&s.env);
@@ -322,14 +385,12 @@ fn pause_blocks_create_but_not_cancel() {
         .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
 
     s.client.pause();
-    assert!(s.client.paused());
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("pause"),).into_val(&s.env),
-            ().into_val(&s.env),
-        )
+    assert_last_event(
+        &s.env,
+        (symbol_short!("pause"),).into_val(&s.env),
+        ().into_val(&s.env),
     );
+    assert!(s.client.paused());
 
     let result = s
         .client
@@ -348,14 +409,12 @@ fn unpause_restores_normal_operation() {
 
     s.client.pause();
     s.client.unpause();
-    assert!(!s.client.paused());
-    assert_eq!(
-        last_event(&s.env),
-        (
-            (symbol_short!("unpause"),).into_val(&s.env),
-            ().into_val(&s.env),
-        )
+    assert_last_event(
+        &s.env,
+        (symbol_short!("unpause"),).into_val(&s.env),
+        ().into_val(&s.env),
     );
+    assert!(!s.client.paused());
 
     let stream_id = s
         .client
@@ -387,7 +446,17 @@ fn withdraw_splits_protocol_fee_to_treasury() {
 
     let treasury = Address::generate(&s.env);
     s.client.set_treasury(&treasury);
+    assert_last_event(
+        &s.env,
+        (symbol_short!("treasury"),).into_val(&s.env),
+        treasury.clone().into_val(&s.env),
+    );
     s.client.set_fee_bps(&500); // 5%
+    assert_last_event(
+        &s.env,
+        (symbol_short!("feebps"),).into_val(&s.env),
+        500u32.into_val(&s.env),
+    );
 
     let stream_id = s
         .client
@@ -485,6 +554,52 @@ fn set_fee_bps_rejects_over_cap() {
     let s = setup();
     let result = s.client.try_set_fee_bps(&1_001);
     assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+}
+
+#[test]
+fn set_treasury_emits_the_new_address() {
+    let s = setup();
+
+    let first = Address::generate(&s.env);
+    s.client.set_treasury(&first);
+    assert_last_event(
+        &s.env,
+        (symbol_short!("treasury"),).into_val(&s.env),
+        first.clone().into_val(&s.env),
+    );
+    assert_eq!(s.client.treasury(), Some(first));
+
+    // Re-pointing the treasury publishes the replacement address.
+    let second = Address::generate(&s.env);
+    s.client.set_treasury(&second);
+    assert_last_event(
+        &s.env,
+        (symbol_short!("treasury"),).into_val(&s.env),
+        second.clone().into_val(&s.env),
+    );
+    assert_eq!(s.client.treasury(), Some(second));
+}
+
+#[test]
+fn set_fee_bps_emits_the_new_value() {
+    let s = setup();
+
+    s.client.set_fee_bps(&500); // 5%
+    assert_last_event(
+        &s.env,
+        (symbol_short!("feebps"),).into_val(&s.env),
+        500u32.into_val(&s.env),
+    );
+    assert_eq!(s.client.fee_bps(), 500);
+
+    // The cap boundary is accepted and emits the accepted value.
+    s.client.set_fee_bps(&MAX_FEE_BPS);
+    assert_last_event(
+        &s.env,
+        (symbol_short!("feebps"),).into_val(&s.env),
+        MAX_FEE_BPS.into_val(&s.env),
+    );
+    assert_eq!(s.client.fee_bps(), MAX_FEE_BPS);
 }
 
 #[test]
