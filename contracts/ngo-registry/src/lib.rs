@@ -25,6 +25,7 @@ pub struct Ngo {
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    TotalNgos,
     Ngo(Address),
 }
 
@@ -38,6 +39,7 @@ pub enum Error {
     NotRegistered = 4,
     /// The NGO has already been approved, so its name is locked.
     AlreadyVerified = 5,
+    ArithmeticOverflow = 6,
 }
 
 /// Approximate ledgers per day at a 5-second close time. Used to express
@@ -105,6 +107,7 @@ impl NgoRegistry {
             return Err(Error::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::TotalNgos, &0u32);
         extend_instance_ttl(&env);
         Ok(())
     }
@@ -167,6 +170,15 @@ impl NgoRegistry {
             verified: false,
         };
         env.storage().persistent().set(&key, &ngo);
+        let total_ngos: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalNgos)
+            .unwrap_or(0);
+        let next_total = total_ngos.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalNgos, &next_total);
         extend_instance_ttl(&env);
         extend_ngo_ttl(&env, &owner);
 
@@ -174,6 +186,14 @@ impl NgoRegistry {
             .publish((symbol_short!("register"), owner), name);
 
         Ok(())
+    }
+
+    /// Returns the number of successfully registered NGOs.
+    pub fn total_ngos(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalNgos)
+            .unwrap_or(0)
     }
 
     /// Changes the name on an NGO's own pending application, so a typo or
