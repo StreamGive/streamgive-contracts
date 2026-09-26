@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{Address as _, AuthorizedFunction, Events as _, Ledger};
-use soroban_sdk::{IntoVal, Symbol};
+use soroban_sdk::{xdr, IntoVal, Symbol, TryFromVal, Val};
 
 fn setup() -> (Env, NgoRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -211,6 +211,12 @@ fn update_name_changes_name_before_approval() {
     let fixed = String::from_str(&env, "Red Cross");
     client.update_name(&owner, &fixed);
 
+    // soroban-sdk 27 returns a non-iterable `ContractEvents`, dropped
+    // `PartialEq` on `Val`, and only keeps the most recent invocation's
+    // events, so snapshot the raw XDR now, before `get_ngo` runs again.
+    let events = env.events().all();
+    let event = events.events().last().unwrap();
+
     assert_eq!(
         client.get_ngo(&owner),
         Ngo {
@@ -219,10 +225,21 @@ fn update_name_changes_name_before_approval() {
             verified: false,
         }
     );
-
-    let (_, topics, data) = env.events().all().last().unwrap();
-    assert_eq!(topics, (symbol_short!("renamed"), owner).into_val(&env));
-    assert_eq!(data, fixed.into_val(&env));
+    let xdr::ContractEventBody::V0(body) = &event.body;
+    let expected_symbol: Val = symbol_short!("renamed").into_val(&env);
+    let expected_owner: Val = owner.into_val(&env);
+    let expected_name: Val = fixed.into_val(&env);
+    assert_eq!(
+        body.topics.as_slice(),
+        &[
+            xdr::ScVal::try_from_val(&env, &expected_symbol).unwrap(),
+            xdr::ScVal::try_from_val(&env, &expected_owner).unwrap(),
+        ]
+    );
+    assert_eq!(
+        body.data,
+        xdr::ScVal::try_from_val(&env, &expected_name).unwrap()
+    );
 }
 
 #[test]
