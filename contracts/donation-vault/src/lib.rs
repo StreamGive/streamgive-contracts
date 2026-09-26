@@ -466,6 +466,55 @@ impl DonationVault {
         Ok(math::accrued(stream.rate, elapsed, stream.balance))
     }
 
+    /// Read-only lookup of the ledger timestamp at which a stream's balance
+    /// runs out, so every client gets the same answer with the rounding done
+    /// in one place. The stream's `balance` counts everything not yet paid
+    /// out (including what's accrued but unwithdrawn) and `last_update` is
+    /// when it was last settled, so this is `last_update` plus the seconds
+    /// `balance` takes at `rate`, rounded up — a partial final second counts
+    /// as a whole one.
+    ///
+    /// Returns `None` when the stream will never deplete: a cancelled or
+    /// zero-rate stream, or a timestamp too far out to represent. An already
+    /// empty stream that still has a rate returns its `last_update`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, token, Address, Env};
+    /// # use donation_vault::{DonationVault, DonationVaultClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let contract_id = env.register(DonationVault, ());
+    /// # let client = DonationVaultClient::new(&env, &contract_id);
+    /// # let admin = Address::generate(&env);
+    /// # client.init(&admin);
+    /// # let token_admin = Address::generate(&env);
+    /// # let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    /// # let token_client = token::StellarAssetClient::new(&env, &sac.address());
+    /// # let donor = Address::generate(&env);
+    /// # let ngo = Address::generate(&env);
+    /// # token_client.mint(&donor, &1_000);
+    /// // 1_000 units at 300/s take 3.33s, so the stream ends at second 4.
+    /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &300);
+    /// let created_at = client.get_stream(&stream_id).created_at;
+    /// assert_eq!(client.depletion_time(&stream_id), Some(created_at + 4));
+    ///
+    /// // A cancelled stream never depletes.
+    /// client.cancel_stream(&stream_id);
+    /// assert_eq!(client.depletion_time(&stream_id), None);
+    /// ```
+    pub fn depletion_time(env: Env, stream_id: u64) -> Result<Option<u64>, Error> {
+        let stream: Stream = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Stream(stream_id))
+            .ok_or(Error::StreamNotFound)?;
+
+        Ok(math::seconds_to_deplete(stream.rate, stream.balance)
+            .and_then(|seconds| stream.last_update.checked_add(seconds)))
+    }
+
     /// Bumps a stream's persistent-storage TTL without touching its state.
     /// Callable by anyone — donor, NGO, or a keeper bot — so a slow,
     /// long-running stream that nobody happens to write to doesn't get
