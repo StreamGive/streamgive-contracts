@@ -38,6 +38,8 @@ pub enum Error {
     NotRegistered = 4,
     /// The NGO has already been approved, so its name is locked.
     AlreadyVerified = 5,
+    /// The NGO has not been approved, so it cannot be revoked.
+    NotVerified = 6,
 }
 
 /// Approximate ledgers per day at a 5-second close time. Used to express
@@ -292,7 +294,8 @@ impl NgoRegistry {
 
     /// Reverses a prior approval, marking a registered NGO as unverified
     /// again. Admin-only. Returns `Error::NotRegistered` for an address
-    /// with no entry, matching `approve_ngo`'s existing behavior.
+    /// with no entry, or `Error::NotVerified` when the NGO is already
+    /// unverified.
     ///
     /// # Examples
     ///
@@ -321,6 +324,9 @@ impl NgoRegistry {
             .persistent()
             .get(&key)
             .ok_or(Error::NotRegistered)?;
+        if !ngo.verified {
+            return Err(Error::NotVerified);
+        }
         ngo.verified = false;
         env.storage().persistent().set(&key, &ngo);
         extend_instance_ttl(&env);
