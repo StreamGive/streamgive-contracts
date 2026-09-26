@@ -6,7 +6,7 @@ platform for verified NGOs on Stellar.
 ## Contracts
 
 - `ngo-registry` — on-chain NGO application, verification, and registry
-- `donation-vault` — streaming donation vault (create / withdraw / cancel / modify streams)
+- `donation-vault` — streaming donation vault (create / withdraw / batch-withdraw / cancel / modify streams)
 
 ## Release profile
 
@@ -90,6 +90,8 @@ the numeric code below (e.g. a failed `try_withdraw` surfacing `Error(5)`).
 | 6    | `ContractPaused`      | The admin has paused the vault; only `cancel_stream` still works.        |
 | 7    | `FeeTooHigh`          | `set_fee_bps` was called with a value above the 10% (1,000 bps) cap.     |
 | 8    | `NoPendingAdmin`      | `accept_admin` was called without a prior (or already-completed) `propose_admin`. |
+| 9    | `ArithmeticOverflow`  | A balance update or the stream-id counter would leave `i128`/`u64`'s range. |
+| 10   | `MixedNgo`            | `withdraw_batch` was given streams that don't all belong to the same NGO. |
 
 ### `ngo-registry`
 
