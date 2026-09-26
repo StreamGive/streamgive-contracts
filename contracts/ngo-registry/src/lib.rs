@@ -8,7 +8,7 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, String,
 };
 
 #[contracttype]
@@ -38,6 +38,8 @@ pub enum Error {
     NotRegistered = 4,
     /// The NGO has already been approved, so its name is locked.
     AlreadyVerified = 5,
+    /// The supplied name is empty or contains only ASCII whitespace.
+    InvalidName = 6,
 }
 
 /// Approximate ledgers per day at a 5-second close time. Used to express
@@ -63,6 +65,14 @@ fn extend_ngo_ttl(env: &Env, owner: &Address) {
         NGO_LIFETIME_THRESHOLD,
         NGO_BUMP_AMOUNT,
     );
+}
+
+fn is_whitespace_only(name: &String) -> bool {
+    let bytes: Bytes = name.into();
+    bytes.is_empty()
+        || bytes
+            .iter()
+            .all(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c'))
 }
 
 /// Reads the configured admin and requires their auth, failing with
@@ -132,7 +142,8 @@ impl NgoRegistry {
     }
 
     /// Submits an NGO application. Callable by the NGO's own address.
-    /// The entry starts unverified until an admin approves it.
+    /// The entry starts unverified until an admin approves it. Names that
+    /// are empty or contain only ASCII whitespace return `Error::InvalidName`.
     ///
     /// # Examples
     ///
@@ -155,6 +166,10 @@ impl NgoRegistry {
     /// ```
     pub fn register(env: Env, owner: Address, name: String) -> Result<(), Error> {
         owner.require_auth();
+
+        if is_whitespace_only(&name) {
+            return Err(Error::InvalidName);
+        }
 
         let key = DataKey::Ngo(owner.clone());
         if env.storage().persistent().has(&key) {
