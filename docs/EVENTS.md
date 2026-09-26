@@ -8,9 +8,16 @@ Soroban events have two parts:
 
 - **Topics** — a tuple, always starting with a `Symbol` naming the event.
   Topics are indexed/filterable.
-- **Data** — the event payload. Shown below as the Rust type(s) passed to
-  `env.events().publish((topics...), data)`. A single value publishes as
-  itself; a tuple of values publishes as an XDR array in that order.
+- **Data** — the event payload. The contracts define each event with
+  Soroban SDK's `#[contractevent]` macro. The event declarations use explicit
+  topic names and data formats so the documented wire layout remains stable
+  during the migration away from deprecated `Events::publish`.
+
+The event type names are `RegisterEvent`, `RenamedEvent`, `ApprovedEvent`,
+`RevokedEvent` in `ngo-registry`, and `ProposedAdminEvent`,
+`AcceptedAdminEvent`, `CancelledAdminEvent`, `PausedEvent`, `UnpausedEvent`,
+`CreatedEvent`, `WithdrawnEvent`, `CancelledStreamEvent`, `ToppedUpEvent`,
+and `RateModifiedEvent` in `donation-vault`.
 
 `Address`, `i128`, `u64`, `u32`, `bool`, and `String` are the standard
 Soroban SDK/XDR types (`Address` is the SDK's account/contract address

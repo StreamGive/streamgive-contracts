@@ -1,15 +1,35 @@
 #![no_std]
-// soroban-sdk 27 deprecates Events::publish in favour of the
-// #[contractevent] macro. Migrating is not a lint cleanup: #[contractevent]
-// derives its own topic/data layout, and streamgive-backend's indexer
-// decodes the current layout by hand (topic[0] = symbol, topic[1] = id),
-// as does docs/EVENTS.md. Both repos have to move in the same change, so
-// it is tracked as its own issue rather than done under -D warnings here.
-#![allow(deprecated)]
-
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, String,
 };
+
+#[contractevent(topics = ["register"], data_format = "single-value")]
+pub struct RegisterEvent {
+    #[topic]
+    pub owner: Address,
+    pub name: String,
+}
+
+#[contractevent(topics = ["renamed"], data_format = "single-value")]
+pub struct RenamedEvent {
+    #[topic]
+    pub owner: Address,
+    pub name: String,
+}
+
+#[contractevent(topics = ["approved"], data_format = "single-value")]
+pub struct ApprovedEvent {
+    #[topic]
+    pub owner: Address,
+    pub data: (),
+}
+
+#[contractevent(topics = ["revoked"], data_format = "single-value")]
+pub struct RevokedEvent {
+    #[topic]
+    pub owner: Address,
+    pub data: (),
+}
 
 #[contracttype]
 // Debug and PartialEq let tests assert_eq! on a try_* call’s full
@@ -182,8 +202,7 @@ impl NgoRegistry {
         extend_instance_ttl(&env);
         extend_ngo_ttl(&env, &owner);
 
-        env.events()
-            .publish((symbol_short!("register"), owner), name);
+        RegisterEvent { owner, name }.publish(&env);
 
         Ok(())
     }
@@ -238,8 +257,7 @@ impl NgoRegistry {
         extend_instance_ttl(&env);
         extend_ngo_ttl(&env, &owner);
 
-        env.events()
-            .publish((symbol_short!("renamed"), owner), name);
+        RenamedEvent { owner, name }.publish(&env);
 
         Ok(())
     }
@@ -304,8 +322,11 @@ impl NgoRegistry {
         extend_instance_ttl(&env);
         extend_ngo_ttl(&env, &ngo_owner);
 
-        env.events()
-            .publish((symbol_short!("approved"), ngo_owner), ());
+        ApprovedEvent {
+            owner: ngo_owner,
+            data: (),
+        }
+        .publish(&env);
 
         Ok(())
     }
@@ -346,8 +367,11 @@ impl NgoRegistry {
         extend_instance_ttl(&env);
         extend_ngo_ttl(&env, &ngo_owner);
 
-        env.events()
-            .publish((symbol_short!("revoked"), ngo_owner), ());
+        RevokedEvent {
+            owner: ngo_owner,
+            data: (),
+        }
+        .publish(&env);
 
         Ok(())
     }

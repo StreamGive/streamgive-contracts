@@ -6,7 +6,7 @@ use soroban_sdk::testutils::{
     Address as _, AuthorizedFunction, Events, Ledger, MockAuth, MockAuthInvoke,
 };
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{symbol_short, IntoVal, Symbol, Val, Vec};
 
 /// Assert the vault event emitted by the most recent vault entry point.
 ///
