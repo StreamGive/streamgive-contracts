@@ -73,6 +73,28 @@ Emitted by `unpause` when an admin lifts a pause.
 | Topics | `("unpause",)` |
 | Data | `()` (no payload) |
 
+### `treasury`
+
+Emitted by `set_treasury` when an admin changes where the protocol fee is
+paid. The indexer should treat the payload as the current treasury address;
+`treasury()` reads the same value back on-chain.
+
+| | |
+|---|---|
+| Topics | `("treasury",)` |
+| Data | `treasury: Address` |
+
+### `feebps`
+
+Emitted by `set_fee_bps` when an admin changes the protocol fee in basis
+points. The payload is the new fee, always within the 10% (1,000 bps) cap
+enforced by the contract; `fee_bps()` reads the same value back on-chain.
+
+| | |
+|---|---|
+| Topics | `("feebps",)` |
+| Data | `fee_bps: u32` |
+
 ### `created`
 
 Emitted by `create_stream` when a donor opens a new stream.
