@@ -731,9 +731,7 @@ impl DonationVault {
         env.storage()
             .persistent()
             .set(&DataKey::Stream(stream_id), &stream);
-        let next_stream_id = stream_id
-            .checked_add(1)
-            .ok_or(Error::ArithmeticOverflow)?;
+        let next_stream_id = stream_id.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
         env.storage()
             .instance()
             .set(&DataKey::NextStreamId, &next_stream_id);
@@ -994,6 +992,10 @@ impl DonationVault {
             .ok_or(Error::StreamNotFound)?;
 
         stream.donor.require_auth();
+
+        if new_rate == stream.rate {
+            return Ok(());
+        }
 
         let now = env.ledger().timestamp();
         let elapsed = now.saturating_sub(stream.last_update);
