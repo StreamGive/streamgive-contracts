@@ -199,6 +199,44 @@ fn top_up_and_modify_rate_settle_before_changing() {
 }
 
 #[test]
+fn modify_rate_settles_elapsed_time_at_the_old_rate_only() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
+    // 30 seconds elapse under the initial 10/s rate, so 300 has accrued.
+    s.env.ledger().with_mut(|l| l.timestamp += 30);
+    assert_eq!(s.client.pending_accrual(&stream_id), 300);
+
+    // The counterfactual that makes this test meaningful: applying the new
+    // 20/s rate to the same 30 seconds would have been 600, not 300.
+    assert_eq!(super::math::accrued(20, 30, 1_000), 600);
+
+    s.client.modify_rate(&stream_id, &20);
+
+    // Exactly what accrued at the OLD rate settles before the new rate takes
+    // effect — a rate change never reaches back over already-elapsed time.
+    assert_eq!(s.token.balance(&s.ngo), 300);
+
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.rate, 20);
+    assert_eq!(stream.balance, 700); // 1_000 - the 300 settled at the old rate
+    assert_eq!(stream.withdrawn, 300);
+
+    // Accrual after the change runs at the new rate: 5 seconds * 20/s = 100.
+    s.env.ledger().with_mut(|l| l.timestamp += 5);
+    assert_eq!(s.client.pending_accrual(&stream_id), 100);
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 100);
+    assert_eq!(s.token.balance(&s.ngo), 400);
+    assert_eq!(s.client.get_stream(&stream_id).balance, 600);
+}
+
+#[test]
 fn created_at_is_set_once_and_never_changes() {
     let s = setup();
     s.token_admin.mint(&s.donor, &1_000);
