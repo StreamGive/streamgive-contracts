@@ -481,6 +481,28 @@ fn protocol_fee_becomes_nonzero_at_the_rounding_boundary() {
 }
 
 #[test]
+fn set_treasury_rejects_the_vault_own_address() {
+    let s = setup();
+    let real_treasury = Address::generate(&s.env);
+    s.client.set_treasury(&real_treasury);
+
+    let result = s.client.try_set_treasury(&s.client.address);
+    assert_eq!(result, Err(Ok(Error::InvalidTreasury)));
+
+    // The rejected call leaves the existing treasury in place.
+    assert_eq!(s.client.treasury(), Some(real_treasury));
+}
+
+#[test]
+fn set_treasury_rejects_the_vault_own_address_when_none_is_set() {
+    let s = setup();
+
+    let result = s.client.try_set_treasury(&s.client.address);
+    assert_eq!(result, Err(Ok(Error::InvalidTreasury)));
+    assert_eq!(s.client.treasury(), None);
+}
+
+#[test]
 fn set_fee_bps_rejects_over_cap() {
     let s = setup();
     let result = s.client.try_set_fee_bps(&1_001);
