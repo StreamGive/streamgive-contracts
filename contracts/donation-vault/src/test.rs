@@ -128,6 +128,56 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
 }
 
 #[test]
+fn concurrent_streams_to_one_ngo_accrue_and_pay_out_independently() {
+    let s = setup();
+    let donor_b = Address::generate(&s.env);
+    s.token_admin.mint(&s.donor, &1_000);
+    s.token_admin.mint(&donor_b, &600);
+
+    // Stream A starts first; stream B starts 20 seconds later at a
+    // different rate, so the two accruals differ.
+    let id_a = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 20);
+    let id_b = s
+        .client
+        .create_stream(&donor_b, &s.ngo, &s.token.address, &600, &5);
+    assert_ne!(id_a, id_b);
+    assert_eq!(s.token.balance(&s.client.address), 1_600);
+
+    // 30 seconds later: A has run 50s (500), B has run 30s (150).
+    s.env.ledger().with_mut(|l| l.timestamp += 30);
+    assert_eq!(s.client.pending_accrual(&id_a), 500);
+    assert_eq!(s.client.pending_accrual(&id_b), 150);
+
+    // Withdrawing A pays exactly A's accrual and leaves B untouched.
+    assert_eq!(s.client.withdraw(&id_a), 500);
+    assert_eq!(s.token.balance(&s.ngo), 500);
+    assert_eq!(s.client.pending_accrual(&id_b), 150);
+    let stream_b = s.client.get_stream(&id_b);
+    assert_eq!(stream_b.balance, 600);
+    assert_eq!(stream_b.withdrawn, 0);
+
+    // Withdrawing B pays exactly B's accrual and leaves A untouched.
+    assert_eq!(s.client.withdraw(&id_b), 150);
+    assert_eq!(s.token.balance(&s.ngo), 650);
+
+    let stream_a = s.client.get_stream(&id_a);
+    assert_eq!(stream_a.balance, 500);
+    assert_eq!(stream_a.withdrawn, 500);
+    let stream_b = s.client.get_stream(&id_b);
+    assert_eq!(stream_b.balance, 450);
+    assert_eq!(stream_b.withdrawn, 150);
+    assert_eq!(s.token.balance(&s.client.address), 950);
+
+    // Both keep accruing at their own rates after the other's withdrawal.
+    s.env.ledger().with_mut(|l| l.timestamp += 10);
+    assert_eq!(s.client.pending_accrual(&id_a), 100);
+    assert_eq!(s.client.pending_accrual(&id_b), 50);
+}
+
+#[test]
 fn top_up_and_modify_rate_settle_before_changing() {
     let s = setup();
     s.token_admin.mint(&s.donor, &2_000);
