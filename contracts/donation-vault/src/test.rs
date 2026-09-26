@@ -481,6 +481,28 @@ fn protocol_fee_becomes_nonzero_at_the_rounding_boundary() {
 }
 
 #[test]
+fn tiny_deposit_at_max_fee_still_pays_the_ngo() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&1_000); // the 10% cap
+
+    // A single unit is the smallest possible deposit. The fee rounds down to
+    // zero on it, so the whole unit must reach the NGO, not the treasury.
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1, &1);
+    s.env.ledger().with_mut(|l| l.timestamp += 1);
+
+    let withdrawn = s.client.withdraw(&stream_id);
+    assert_eq!(withdrawn, 1);
+    assert_eq!(s.token.balance(&s.ngo), 1);
+    assert_eq!(s.token.balance(&treasury), 0);
+}
+
+#[test]
 fn set_fee_bps_rejects_over_cap() {
     let s = setup();
     let result = s.client.try_set_fee_bps(&1_001);

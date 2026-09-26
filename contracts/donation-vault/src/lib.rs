@@ -142,6 +142,20 @@ fn record_payout(stream: &mut Stream, amount: i128) -> Result<(), Error> {
     Ok(())
 }
 
+/// The protocol fee taken out of a `amount` payout: zero with no treasury
+/// set (there's nowhere to send it), otherwise `fee_bps` of `amount`
+/// rounded down and never more than `amount` itself.
+fn protocol_fee(env: &Env, amount: i128) -> i128 {
+    let treasury: Option<Address> = env.storage().instance().get(&DataKey::Treasury);
+    match treasury {
+        Some(_) => {
+            let fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0);
+            (amount.saturating_mul(fee_bps as i128) / 10_000).min(amount)
+        }
+        None => 0,
+    }
+}
+
 /// Pays `amount` out to the NGO, skimming a protocol fee to the treasury
 /// first if one is configured. With no treasury set, the full amount goes
 /// to the NGO regardless of `fee_bps` — there's nowhere to send a fee.
@@ -151,13 +165,7 @@ fn pay_ngo(env: &Env, token_client: &token::Client, ngo: &Address, amount: i128)
     }
 
     let treasury: Option<Address> = env.storage().instance().get(&DataKey::Treasury);
-    let fee = match &treasury {
-        Some(_) => {
-            let fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0);
-            (amount.saturating_mul(fee_bps as i128) / 10_000).min(amount)
-        }
-        None => 0,
-    };
+    let fee = protocol_fee(env, amount);
     let net = amount - fee;
 
     if net > 0 {
@@ -704,6 +712,14 @@ impl DonationVault {
         donor.require_auth();
 
         if deposit <= 0 || rate <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // The most the NGO can draw in the first second is `rate`, capped by
+        // the deposit. If the fee would swallow all of it, the stream could
+        // never pay the NGO anything, so refuse it up front.
+        let first_payout = rate.min(deposit);
+        if first_payout - protocol_fee(&env, first_payout) <= 0 {
             return Err(Error::InvalidAmount);
         }
 
