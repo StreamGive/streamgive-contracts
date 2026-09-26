@@ -63,6 +63,12 @@ pub enum Error {
     /// leave its type's range. Returned instead of letting the release
     /// profile's overflow checks panic and abort the transaction.
     ArithmeticOverflow = 9,
+    /// `NextStreamId` was missing from instance storage when `create_stream`
+    /// tried to read it. `init` always sets it, so this should be
+    /// unreachable in practice, but a missing counter must never be
+    /// silently treated as `0` — that could collide with an existing
+    /// stream. Returned instead of defaulting.
+    StreamCounterMissing = 10,
 }
 
 /// Fee cap of 10%, enforced by `set_fee_bps` so the admin can never take
@@ -714,7 +720,7 @@ impl DonationVault {
             .storage()
             .instance()
             .get(&DataKey::NextStreamId)
-            .unwrap_or(0);
+            .ok_or(Error::StreamCounterMissing)?;
 
         let now = env.ledger().timestamp();
         let stream = Stream {
