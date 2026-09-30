@@ -62,7 +62,7 @@ funds while the rest of the contract is frozen.
 money to a donor, so keeping it available means a pause can never trap a
 donor's unspent deposit. The read-only views (`admin`, `pending_admin`,
 `get_stream`, `stream_count`, `pending_accrual`, `paused`, `treasury`,
-`fee_bps`) and `extend_stream` also keep working, since none of them can
+`fee_bps`) and `bump_stream_ttl` also keep working, since none of them can
 move funds, and `unpause` is of course still reachable.
 
 ## Related repositories
@@ -132,7 +132,7 @@ facilities that are unavailable on-chain.
 
 Persistent storage is retained per key. A stream that is never touched can
 expire independently of the vault instance, so state-changing calls and the
-permissionless `extend_stream` entry point refresh the specific stream that
+permissionless `bump_stream_ttl` entry point refresh the specific stream that
 needs to remain available.
 
 ### What is the cancelled-stream grace period?

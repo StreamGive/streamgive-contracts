@@ -447,9 +447,9 @@ impl NgoRegistry {
     /// # let owner = Address::generate(&env);
     /// # let name = String::from_str(&env, "Example NGO");
     /// # client.register(&owner, &name);
-    /// client.touch_ngo(&owner);
+    /// client.bump_ngo_ttl(&owner);
     /// ```
-    pub fn touch_ngo(env: Env, owner: Address) -> Result<(), Error> {
+    pub fn bump_ngo_ttl(env: Env, owner: Address) -> Result<(), Error> {
         if !env.storage().persistent().has(&DataKey::Ngo(owner.clone())) {
             return Err(Error::NotRegistered);
         }
