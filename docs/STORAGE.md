@@ -33,7 +33,7 @@ counts below assume a 5-second average ledger close time
 | `Treasury` | Instance | 30d / 29d | Address that receives the protocol fee cut on withdrawal. |
 | `FeeBps` | Instance | 30d / 29d | Protocol fee, in basis points, capped at `MAX_FEE_BPS` (1,000 / 10%). |
 | `CancelGraceLedgers` | Instance | 30d / 29d | Additional ledgers to retain cancelled stream records for indexing. |
-| `Stream(u64)` | Persistent | 90d / 89d | One donor→NGO stream record, keyed by stream id. Extended on every `create_stream`, `withdraw`, `top_up`, `cancel_stream`, or rate change touching that stream. |
+| `Stream(u64)` | Persistent | 90d / 89d | One donor→NGO stream record, keyed by stream id. Extended on every `create_stream`, `withdraw`, `top_up`, `cancel_stream`, `bump_stream_ttl`, or rate change touching that stream. |
 
 All instance keys share one TTL (bumped to 30 days, refreshed once it
 would otherwise drop below 29 days remaining) via `extend_instance_ttl`,
@@ -57,8 +57,8 @@ eligible for archival.
 As with `donation-vault`, the instance TTL is refreshed on every
 state-changing call via `extend_instance_ttl`. Each `Ngo(Address)` entry
 gets its own 90-day TTL via `extend_ngo_ttl`, refreshed by `register`,
-`approve_ngo`, and `revoke_ngo` for that specific entry — an NGO that
-registers once and is never approved, revoked, or re-touched can still
+`approve_ngo`, `revoke_ngo`, and `bump_ngo_ttl` for that specific entry — an NGO that
+registers once and is never approved, revoked, or bumped can still
 have its entry archived independently of the registry's admin data.
 
 ## Implication for fee estimation

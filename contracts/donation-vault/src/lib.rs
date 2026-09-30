@@ -99,19 +99,35 @@ pub enum Error {
     /// leave its type's range. Returned instead of letting the release
     /// profile's overflow checks panic and abort the transaction.
     ArithmeticOverflow = 9,
-    /// `deposit` was below the configured `min_deposit`.
-    DepositTooLow = 10,
+    /// `NextStreamId` was missing from instance storage when `create_stream`
+    /// tried to read it. `init` always sets it, so this should be
+    /// unreachable in practice, but a missing counter must never be
+    /// silently treated as `0` — that could collide with an existing
+    /// stream. Returned instead of defaulting.
+    StreamCounterMissing = 10,
+    /// `pause` was called while the vault was already paused.
     AlreadyPaused = 11,
+    /// `unpause` was called while the vault was not paused.
     AlreadyUnpaused = 12,
-    /// The donor and the NGO are the same address, so the stream would pay
-    /// the donor back their own deposit. Rejected at creation: a stream that
-    /// nets to zero still counts as a committed donation in the indexer and
-    /// on impact pages, which is a way to inflate those totals for free.
+    /// `create_stream` was called with the same address as both `donor` and
+    /// `ngo`. Rejected before the deposit is pulled or the amounts are
+    /// validated, since a self-stream is never a legitimate call.
     SelfStream = 13,
-    /// The stream has already been cancelled and closed out.
+    /// A stream-mutating call (e.g. `top_up`) targeted a stream that
+    /// `cancel_stream` has already closed out.
     StreamCancelled = 14,
+    /// `create_stream` was called with a `deposit` below the configured
+    /// `min_deposit` floor.
+    DepositTooLow = 15,
+    /// The donor already has `max_streams_per_donor` streams. Raised by
+    /// `create_stream` before the deposit is pulled. See issue #94.
+    StreamLimitExceeded = 16,
+    /// A registry is configured and `create_stream`'s `ngo` is not a
+    /// verified entry in it (missing, unverified, or the registry call
+    /// itself failed).
+    NgoNotVerified = 17,
     /// The proposed administrator is not a valid replacement.
-    InvalidAdmin = 15,
+    InvalidAdmin = 18,
 }
 
 /// Fee cap of 10%, enforced by `set_fee_bps` so the admin can never take
@@ -642,9 +658,9 @@ impl DonationVault {
     /// let stream_id = client.create_stream(&donor, &ngo, &sac.address(), &1_000, &10);
     ///
     /// // Anyone can keep the stream's storage alive, no auth required.
-    /// client.extend_stream(&stream_id);
+    /// client.bump_stream_ttl(&stream_id);
     /// ```
-    pub fn extend_stream(env: Env, stream_id: u64) -> Result<(), Error> {
+    pub fn bump_stream_ttl(env: Env, stream_id: u64) -> Result<(), Error> {
         if !env.storage().persistent().has(&DataKey::Stream(stream_id)) {
             return Err(Error::StreamNotFound);
         }
@@ -969,8 +985,7 @@ impl DonationVault {
             .instance()
             .set(&DataKey::MaxStreamsPerDonor, &limit);
         extend_instance_ttl(&env);
-        env.events()
-            .publish((symbol_short!("maxstrm"),), limit);
+        env.events().publish((symbol_short!("maxstrm"),), limit);
         Ok(())
     }
 

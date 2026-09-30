@@ -198,7 +198,7 @@ fn revoke_unregistered_ngo_fails() {
 }
 
 #[test]
-fn touch_ngo_leaves_entry_unchanged() {
+fn bump_ngo_ttl_leaves_entry_unchanged() {
     let (env, client, _admin) = setup();
     let owner = Address::generate(&env);
     let name = String::from_str(&env, "Red Cross");
@@ -206,18 +206,18 @@ fn touch_ngo_leaves_entry_unchanged() {
     client.approve_ngo(&owner);
 
     let before = client.get_ngo(&owner);
-    client.touch_ngo(&owner);
+    client.bump_ngo_ttl(&owner);
     let after = client.get_ngo(&owner);
 
     assert_eq!(before, after);
 }
 
 #[test]
-fn touch_unregistered_ngo_fails() {
+fn bump_unregistered_ngo_ttl_fails() {
     let (env, client, _admin) = setup();
     let random = Address::generate(&env);
 
-    let result = client.try_touch_ngo(&random);
+    let result = client.try_bump_ngo_ttl(&random);
     assert_eq!(result, Err(Ok(Error::NotRegistered)));
 }
 
@@ -383,13 +383,13 @@ fn update_name_bumps_instance_and_ngo_ttl() {
 }
 
 #[test]
-fn touch_ngo_bumps_instance_and_ngo_ttl() {
+fn bump_ngo_ttl_bumps_instance_and_ngo_ttl() {
     let (env, client, _admin) = setup();
     let owner = Address::generate(&env);
     client.register(&owner, &String::from_str(&env, "Red Cross"));
     age_past_thresholds(&env, &client, &owner);
 
-    client.touch_ngo(&owner);
+    client.bump_ngo_ttl(&owner);
 
     assert_ttls_bumped(&env, &client, &owner);
 }
