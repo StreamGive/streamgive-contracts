@@ -10,11 +10,20 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token,
+    Address, BytesN, Env, String,
     Address, BytesN, Env, Map, String, Vec,
 };
 
 mod math;
 
+/// Mirrors ngo-registry's `Ngo` record for cross-contract calls. Declared
+/// locally rather than imported from the `ngo-registry` crate: depending on
+/// its source directly would pull that crate's own `#[contractimpl]` exports
+/// into this contract's Wasm link unit, colliding with this contract's
+/// identically-named entry points (`admin`, `init`, `upgrade`, ...).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct NgoRecord {
 /// The subset of the NGO registry's `Ngo` record the vault needs when
 /// verifying a target NGO. Mirrors the registry's on-chain layout so a record
 /// returned by `get_ngo` decodes identically.
@@ -26,6 +35,13 @@ pub struct Ngo {
     pub verified: bool,
 }
 
+/// Thin cross-contract interface onto the configured ngo-registry contract.
+/// Only the one method `create_stream` needs. See `NgoRecord` for why this
+/// isn't just imported from the `ngo-registry` crate.
+#[contractclient(name = "NgoRegistryClient")]
+#[allow(dead_code)]
+trait NgoRegistryInterface {
+    fn get_ngo(env: Env, owner: Address) -> NgoRecord;
 /// The NGO registry entry point the vault calls. Declared as a client trait
 /// rather than importing the registry's contract crate so the registry's
 /// exported entry points aren't linked into the vault's wasm (which would
@@ -110,6 +126,7 @@ pub enum DataKey {
     /// deleted) — so this is really a lifetime cap, not a live cap.
     DonorStreamCount(Address),
     MinDeposit,
+    /// Additional ledgers to retain a cancelled stream for indexing.
     CancelGraceLedgers,
     /// Optional NGO registry contract used to verify NGOs before a stream
     /// is opened. Absent means "no registry check configured".
@@ -135,6 +152,39 @@ pub enum Error {
     /// leave its type's range. Returned instead of letting the release
     /// profile's overflow checks panic and abort the transaction.
     ArithmeticOverflow = 9,
+    /// The donor and the NGO are the same address, so the stream would pay
+    /// the donor back their own deposit. Rejected at creation: a stream that
+    /// nets to zero still counts as a committed donation in the indexer and
+    /// on impact pages, which is a way to inflate those totals for free.
+    SelfStream = 10,
+    /// `set_treasury` was given the vault's own address. Fees paid there
+    /// could never be moved out again.
+    InvalidTreasury = 11,
+    AlreadyPaused = 12,
+    AlreadyUnpaused = 13,
+    /// `deposit` was below the configured `min_deposit`.
+    DepositTooLow = 14,
+    /// `top_up` or `modify_rate` was called on a stream that `cancel_stream`
+    /// has already closed out. A cancelled stream's rate and balance are
+    /// zeroed for good; topping it up would just sit inert, and changing
+    /// its rate would quietly revive a stream the backend already treats
+    /// as terminal.
+    StreamCancelled = 15,
+    /// The proposed administrator is not a valid replacement.
+    InvalidAdmin = 16,
+    /// The donor already has `max_streams_per_donor` streams. Raised by
+    /// `create_stream` before the deposit is pulled. See issue #94.
+    StreamLimitExceeded = 17,
+    /// The NGO address passed to `create_stream` is not verified in the
+    /// configured ngo-registry. Only set when a registry address has been
+    /// stored via `set_registry`.
+    NgoNotVerified = 18,
+    /// `NextStreamId` was missing from instance storage when `create_stream`
+    /// tried to read it. `init` always sets it, so this should be
+    /// unreachable in practice, but a missing counter must never be
+    /// silently treated as `0` — that could collide with an existing
+    /// stream. Returned instead of defaulting.
+    StreamCounterMissing = 19,
     /// `deposit` was below the configured `min_deposit`.
     DepositTooLow = 10,
     AlreadyPaused = 11,
@@ -1005,6 +1055,10 @@ impl DonationVault {
 
     /// Sets where the protocol fee (if any) gets paid. Admin-gated.
     ///
+    /// Fails with `Error::InvalidTreasury` if `treasury` is this contract's
+    /// own address: the vault has no way to spend from itself, so fees sent
+    /// there would be locked permanently.
+    ///
     /// # Examples
     ///
     /// ```rust,no_run
@@ -1022,6 +1076,9 @@ impl DonationVault {
     /// ```
     pub fn set_treasury(env: Env, treasury: Address) -> Result<(), Error> {
         require_admin(&env)?;
+        if treasury == env.current_contract_address() {
+            return Err(Error::InvalidTreasury);
+        }
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         extend_instance_ttl(&env);
 
@@ -1286,8 +1343,9 @@ impl DonationVault {
             .unwrap_or(0)
     }
 
-    /// Sets how many additional ledgers a cancelled stream remains available
-    /// for indexers after the normal stream-retention period. Admin-only.
+    /// Sets the number of additional ledgers that a cancelled stream remains
+    /// available for indexing after the normal stream TTL bump. Admin-gated.
+    /// A value of zero preserves the default stream retention period.
     pub fn set_cancel_grace_ledgers(env: Env, grace_ledgers: u32) -> Result<(), Error> {
         require_admin(&env)?;
         STREAM_BUMP_AMOUNT
@@ -1300,6 +1358,7 @@ impl DonationVault {
         Ok(())
     }
 
+    /// Reads the additional cancelled-stream retention period, in ledgers.
     /// Returns the configured cancelled-stream indexing grace period.
     pub fn cancel_grace_ledgers(env: Env) -> u32 {
         env.storage()

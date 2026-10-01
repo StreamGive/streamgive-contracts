@@ -127,7 +127,7 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
         .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
     let created = last_event(&s.env);
 
-    // `last_event` only sees the latest top-level call, so assert it before
+    // `last_event` only sees the latest top-level call, so snapshot it before
     // any other call (such as a balance read) replaces it.
     let created = last_event(&s.env);
     assert_eq!(
@@ -181,10 +181,6 @@ fn full_lifecycle_create_accrue_withdraw_cancel() {
             (200i128, 300i128).into_val(&s.env),
         )
     );
-    assert_eq!(s.token.balance(&s.ngo), 700);
-    assert_eq!(s.token.balance(&s.donor), 300);
-
-    // 200 more settles to the NGO on cancel; the untouched 300 refunds to the donor.
     assert_eq!(s.token.balance(&s.ngo), 700);
     assert_eq!(s.token.balance(&s.donor), 300);
 
@@ -987,6 +983,9 @@ fn withdraw_splits_protocol_fee_to_treasury() {
 
     let treasury = Address::generate(&s.env);
     s.client.set_treasury(&treasury);
+    let treasury_evt = last_event(&s.env);
+    assert_eq!(
+        treasury_evt,
     assert_eq!(
         last_event(&s.env),
         (
@@ -995,6 +994,13 @@ fn withdraw_splits_protocol_fee_to_treasury() {
         )
     );
     s.client.set_fee_bps(&500); // 5%
+    let feebps_evt = last_event(&s.env);
+    assert_eq!(
+        feebps_evt,
+        (
+            (symbol_short!("feeset"),).into_val(&s.env),
+            500u32.into_val(&s.env),
+        )
     assert_last_event(
         &s.env,
         (symbol_short!("feeset"),).into_val(&s.env),
@@ -1124,6 +1130,25 @@ fn protocol_fee_becomes_nonzero_at_the_rounding_boundary() {
 }
 
 #[test]
+fn set_treasury_rejects_the_vault_own_address() {
+    let s = setup();
+    let real_treasury = Address::generate(&s.env);
+    s.client.set_treasury(&real_treasury);
+
+    let result = s.client.try_set_treasury(&s.client.address);
+    assert_eq!(result, Err(Ok(Error::InvalidTreasury)));
+
+    // The rejected call leaves the existing treasury in place.
+    assert_eq!(s.client.treasury(), Some(real_treasury));
+}
+
+#[test]
+fn set_treasury_rejects_the_vault_own_address_when_none_is_set() {
+    let s = setup();
+
+    let result = s.client.try_set_treasury(&s.client.address);
+    assert_eq!(result, Err(Ok(Error::InvalidTreasury)));
+    assert_eq!(s.client.treasury(), None);
 fn compute_fee_avoids_overflow_near_i128_max() {
     let s = setup();
 
@@ -1178,6 +1203,83 @@ fn set_fee_bps_boundary_exact_max_succeeds() {
 }
 
 #[test]
+fn pending_payout_with_no_treasury_returns_full_gross_and_zero_fee() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    s.client.set_fee_bps(&500); // 5% configured, but no treasury
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 50); // 500 accrues
+
+    let (net, fee) = s.client.pending_payout(&stream_id);
+    assert_eq!(fee, 0); // no treasury → no fee, regardless of fee_bps
+    assert_eq!(net, 500); // full accrual goes to the NGO
+
+    // Read-only: nothing moved.
+    assert_eq!(s.token.balance(&s.ngo), 0);
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 1_000);
+    assert_eq!(stream.withdrawn, 0);
+}
+
+#[test]
+fn pending_payout_with_treasury_and_zero_bps_returns_full_gross_and_zero_fee() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    // fee_bps defaults to 0 — a treasury exists but takes nothing
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 50); // 500 accrues
+
+    let (net, fee) = s.client.pending_payout(&stream_id);
+    assert_eq!(fee, 0); // 0 bps → zero fee even with a treasury set
+    assert_eq!(net, 500);
+
+    // Read-only: nothing moved.
+    assert_eq!(s.token.balance(&s.ngo), 0);
+    assert_eq!(s.token.balance(&treasury), 0);
+}
+
+#[test]
+fn pending_payout_with_nonzero_fee_matches_actual_withdraw_split() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&500); // 5%
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 50); // 500 accrues
+
+    let (net, fee) = s.client.pending_payout(&stream_id);
+    assert_eq!(fee, 25); // 5% of 500
+    assert_eq!(net, 475); // 500 - 25
+
+    // Read-only: nothing moved yet.
+    assert_eq!(s.token.balance(&s.ngo), 0);
+    assert_eq!(s.token.balance(&treasury), 0);
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 1_000);
+    assert_eq!(stream.withdrawn, 0);
+
+    // The values must match exactly what withdraw actually distributes.
+    s.client.withdraw(&stream_id);
+    assert_eq!(s.token.balance(&s.ngo), net);
+    assert_eq!(s.token.balance(&treasury), fee);
+}
+
+#[test]
+fn min_deposit_setter_and_guard() {
 fn max_fee_bps_is_exposed_on_chain() {
     let s = setup();
     assert_eq!(s.client.max_fee_bps(), 1_000);
@@ -2615,6 +2717,8 @@ fn status_is_queryable_after_cancel_then_further_operations_fail() {
     );
     // top_up on a cancelled stream is rejected (cancelled sets rate = 0).
     s.env.ledger().with_mut(|l| l.timestamp += 10);
+    let result = s.client.try_withdraw(&stream_id);
+    assert!(result.is_err()); // nothing left to withdraw
     let result = s.client.try_top_up(&stream_id, &100);
     assert_eq!(result, Err(Ok(Error::StreamCancelled)));
 }

@@ -44,6 +44,7 @@ pub enum Error {
     AlreadyVerified = 5,
     /// `name` is longer than `MAX_NGO_NAME_LEN`.
     NameTooLong = 6,
+    /// `revoke_ngo` was called on an NGO that isn't currently verified.
     /// The NGO has not been approved, so it cannot be revoked.
     NotVerified = 7,
     ArithmeticOverflow = 8,

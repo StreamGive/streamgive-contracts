@@ -58,4 +58,10 @@ This project does not yet follow a formal versioning scheme — each contract's
   are the same address with `Error::SelfStream`, so a deposit can't be
   counted as a committed donation while streaming straight back to its donor.
 
+### Fixed
+
+- `donation-vault`: `set_treasury` rejects the vault's own address with
+  `Error::InvalidTreasury`, so protocol fees can't be locked in the
+  contract.
+
 [Unreleased]: https://github.com/StreamGive/streamgive-contracts/compare/main...HEAD
