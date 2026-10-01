@@ -295,6 +295,107 @@ fn top_up_and_modify_rate_settle_before_changing() {
 }
 
 #[test]
+fn drain_to_zero_boundary_pending_accrual_never_exceeds_balance() {
+    // Issue #206: at exactly `balance / rate` seconds, pending_accrual equals
+    // the full remaining balance, and one second later it is still exactly the
+    // balance (capped), never more.
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    // 1_000 units at 100/s → depletes in exactly 10 seconds.
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &100);
+
+    // One second before full drain: 900 of 1_000 unlocked.
+    s.env.ledger().with_mut(|l| l.timestamp += 9);
+    assert_eq!(s.client.pending_accrual(&stream_id), 900);
+
+    // Exactly at the drain boundary: the full balance is pending.
+    s.env.ledger().with_mut(|l| l.timestamp += 1);
+    assert_eq!(s.client.pending_accrual(&stream_id), 1_000);
+
+    // Past the boundary: still capped at the balance, never more.
+    s.env.ledger().with_mut(|l| l.timestamp += 100);
+    assert_eq!(s.client.pending_accrual(&stream_id), 1_000);
+
+    // Withdrawing at the exact boundary pays the full balance and drains.
+    let s2 = setup();
+    s2.token_admin.mint(&s2.donor, &1_000);
+    let id2 = s2
+        .client
+        .create_stream(&s2.donor, &s2.ngo, &s2.token.address, &1_000, &100);
+    s2.env.ledger().with_mut(|l| l.timestamp += 10);
+    assert_eq!(s2.client.pending_accrual(&id2), 1_000);
+    assert_eq!(s2.client.withdraw(&id2), 1_000);
+    assert_eq!(s2.token.balance(&s2.ngo), 1_000);
+    let stream = s2.client.get_stream(&id2);
+    assert_eq!(stream.balance, 0);
+    assert_eq!(stream.withdrawn, 1_000);
+
+    // A non-divisible boundary: 999 at 100/s depletes in ceil(9.99) = 10s.
+    // At 9s only 900 has unlocked; at 10s the remaining 99 is unlocked.
+    let s3 = setup();
+    s3.token_admin.mint(&s3.donor, &999);
+    let id3 = s3
+        .client
+        .create_stream(&s3.donor, &s3.ngo, &s3.token.address, &999, &100);
+    s3.env.ledger().with_mut(|l| l.timestamp += 9);
+    assert_eq!(s3.client.pending_accrual(&id3), 900);
+    s3.env.ledger().with_mut(|l| l.timestamp += 1);
+    assert_eq!(s3.client.pending_accrual(&id3), 999);
+    // One second past: still 999, never 1_099.
+    s3.env.ledger().with_mut(|l| l.timestamp += 1);
+    assert_eq!(s3.client.pending_accrual(&id3), 999);
+}
+
+#[test]
+fn pause_blocks_state_changes_but_accrual_continues() {
+    // Issue #207: pause blocks state-changing calls (create, withdraw, etc.)
+    // but time-based accrual keeps running; after unpause the withdrawal
+    // reflects accrual across the paused interval.
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    assert!(!s.client.paused());
+
+    // Accrue for 10 seconds, then pause.
+    s.env.ledger().with_mut(|l| l.timestamp += 10);
+    assert_eq!(s.client.pending_accrual(&stream_id), 100);
+    s.client.pause();
+    assert!(s.client.paused());
+
+    // State-changing calls are blocked while paused.
+    let paused_addr = Address::generate(&s.env);
+    let result = s
+        .client
+        .try_create_stream(&s.donor, &paused_addr, &s.token.address, &100, &1);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+
+    let result = s.client.try_withdraw(&stream_id);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+
+    // Accrual continues on the wall clock even while paused: 30 more seconds
+    // pass, so pending is now 100 + 300 = 400.
+    s.env.ledger().with_mut(|l| l.timestamp += 30);
+    assert_eq!(s.client.pending_accrual(&stream_id), 400);
+
+    // Unpause; withdrawal reflects the full paused interval.
+    s.client.unpause();
+    assert!(!s.client.paused());
+    assert_eq!(s.client.withdraw(&stream_id), 400);
+    assert_eq!(s.token.balance(&s.ngo), 400);
+
+    // Stream bookkeeping is consistent after the pause-window withdrawal.
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 600);
+    assert_eq!(stream.withdrawn, 400);
+}
+
+#[test]
 fn created_at_is_set_once_and_never_changes() {
     let s = setup();
     s.token_admin.mint(&s.donor, &1_000);
@@ -1066,8 +1167,6 @@ fn max_fee_bps_is_exposed_on_chain() {
 }
 
 #[test]
-#[should_panic]
-fn withdraw_fails_for_non_ngo_caller() {
 fn token_fee_bps_falls_back_to_the_global_default_with_no_override() {
     let s = setup();
     s.client.set_fee_bps(&500); // 5% global default
@@ -2323,9 +2422,6 @@ fn admin_can_set_the_per_donor_cap() {
     assert_eq!(s.client.max_streams_per_donor(), 5);
 }
 
-    let (net, fee) = s.client.pending_payout(&stream_id);
-    assert_eq!(fee, 0); // no treasury → no fee, regardless of fee_bps
-    assert_eq!(net, 500); // full accrual goes to the NGO
 #[test]
 fn non_admin_cannot_set_the_per_donor_cap() {
     let s = setup();
@@ -2374,9 +2470,6 @@ fn raising_the_cap_lets_the_next_stream_through() {
     assert_eq!(s.client.get_stream(&stream_id).donor, s.donor);
 }
 
-    let (net, fee) = s.client.pending_payout(&stream_id);
-    assert_eq!(fee, 0); // 0 bps → zero fee even with a treasury set
-    assert_eq!(net, 500);
 #[test]
 fn lowering_the_cap_does_not_retroactively_affect_existing_streams() {
     let s = setup();
@@ -2441,9 +2534,6 @@ fn new_stream_starts_active() {
     assert_eq!(s.client.get_stream(&stream_id).status, StreamStatus::Active);
 }
 
-    let (net, fee) = s.client.pending_payout(&stream_id);
-    assert_eq!(fee, 25); // 5% of 500
-    assert_eq!(net, 475); // 500 - 25
 #[test]
 fn cancelled_stream_reports_cancelled() {
     let s = setup();

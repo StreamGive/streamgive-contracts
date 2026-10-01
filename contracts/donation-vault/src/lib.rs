@@ -141,6 +141,12 @@ pub enum Error {
     AlreadyUnpaused = 12,
     SelfStream = 13,
     StreamCancelled = 14,
+    InvalidAdmin = 15,
+    StreamLimitExceeded = 16,
+    NgoNotVerified = 17,
+    StreamCounterMissing = 18,
+    MixedNgo = 19,
+    NotPaused = 20,
 }
 
 /// Fee cap of 10%, enforced by `set_fee_bps` so the admin can never take
@@ -1098,6 +1104,8 @@ impl DonationVault {
     /// ceiling without maintaining a separate off-chain copy.
     pub fn max_fee_bps(_env: Env) -> u32 {
         MAX_FEE_BPS
+    }
+
     /// Sets a per-token protocol fee override, in basis points (issue
     /// #200). `pay_ngo` uses this instead of the global `fee_bps` for any
     /// payout in `token`, falling back to the global default for every
