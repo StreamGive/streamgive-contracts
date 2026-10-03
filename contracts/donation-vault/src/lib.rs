@@ -181,7 +181,9 @@ pub struct Config {
 #[contracttype]
 #[derive(Clone, Debug)]
 pub enum DataKey {
+    /// The address authorized to administer the vault.
     Admin,
+    /// The administrator nominated to take over, pending acceptance.
     PendingAdmin,
     /// Set once `renounce_admin` is called; checked by `require_admin` so
     /// every admin-gated entry point fails with `Error::AdminRenounced`
@@ -190,10 +192,15 @@ pub enum DataKey {
     /// stepped down from one that was never initialized, and blocks `init`
     /// from installing a new admin afterwards.
     AdminRenounced,
+    /// The next stream identifier to allocate.
     NextStreamId,
+    /// A donation stream keyed by its numeric identifier.
     Stream(u64),
+    /// Whether fund-moving operations are currently paused.
     Paused,
+    /// The address that receives protocol fees, when configured.
     Treasury,
+    /// The protocol fee in basis points.
     FeeBps,
     /// The token allowlist surfaced to frontend token pickers. See
     /// [`allowed_tokens`](DonationVault::allowed_tokens); empty until an
@@ -205,6 +212,7 @@ pub enum DataKey {
     /// `create_stream`, never decremented (streams are cancelled, not
     /// deleted) — so this is really a lifetime cap, not a live cap.
     DonorStreamCount(Address),
+    /// Minimum permitted stream deposit amount.
     MinDeposit,
     /// Additional ledgers to retain a cancelled stream for indexing.
     CancelGraceLedgers,
