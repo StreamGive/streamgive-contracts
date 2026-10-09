@@ -2095,6 +2095,10 @@ impl DonationVault {
             return Err(Error::StreamCancelled);
         }
 
+        if new_rate == stream.rate {
+            return Ok(());
+        }
+
         let now = env.ledger().timestamp();
         let _accrued = settle(&env, &mut stream, now)?;
         stream.rate = new_rate;
