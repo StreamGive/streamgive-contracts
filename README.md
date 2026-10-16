@@ -14,20 +14,23 @@ which risks are knowingly accepted, see
 - `ngo-registry` — on-chain NGO application, verification, and registry
 - `donation-vault` — streaming donation vault (create / withdraw / cancel / modify streams)
 
-### Donation-vault admin transfer
+### Admin transfers
 
-Admin changes use a two-step handshake:
+Both `ngo-registry` and `donation-vault` support admin transfers through the
+same two-step handshake. Each contract manages its own admin and pending
+proposal:
 
-1. The current admin calls `propose_admin(new_admin)`, which records the
-   pending administrator without changing the active admin.
-2. The proposed address calls `accept_admin()` to complete the transfer.
-3. Either side can abort the pending transfer by calling
-   `cancel_admin_proposal()` before acceptance; the active admin remains
+1. The contract's current admin calls `propose_admin(new_admin)`. This records
+   the pending administrator without changing the active admin.
+2. The proposed address calls `accept_admin()` on that contract to complete
+   the transfer.
+3. Before acceptance, the current admin can call `cancel_admin_proposal()` on
+   that contract to remove the pending proposal; the active admin remains
    unchanged.
 
 Only the current admin can propose or cancel a transfer, and only the pending
-administrator can accept it. The current admin continues to control
-admin-gated operations until acceptance succeeds.
+administrator can accept it. Until acceptance succeeds, the current admin
+continues to control that contract's admin-gated operations.
 
 ## Release profile
 
