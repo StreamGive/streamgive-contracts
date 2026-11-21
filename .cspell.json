@@ -12,7 +12,9 @@
     "stroops",
     "cargo",
     "testnet",
-    "mainnet"
+    "mainnet",
+    "machete"
   ],
+  "ignoreRegExpList": ["```[\\s\\S]*?```", "`[^`\\n]+`"],
   "ignorePaths": ["target/**", "node_modules/**"]
 }
