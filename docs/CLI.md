@@ -1,121 +1,267 @@
-# Stellar CLI cheat sheet
+# Stellar CLI Cheat Sheet for StreamGive Contracts
 
-Common `stellar contract invoke` commands for the `donation-vault` and
-`ngo-registry` on Stellar testnet. These examples submit transactions; the CLI
-simulates them first, then sends them unless you pass `--send=no`.
+Copy-ready `stellar contract invoke` commands for building, deploying, initializing, and operating `ngo-registry` and `donation-vault` on Stellar **testnet**.
 
-## Set up your shell
+---
 
-Install the [Stellar CLI](https://developers.stellar.org/docs/tools/cli) and
-create or import funded testnet identities. Replace the contract IDs with
-those for your deployment (the deploy script records them in
-[`deployments.json`](../deployments.json)).
+## 1. Environment Variables & Identity Setup
 
-```sh
-export NETWORK=testnet
-export ADMIN=admin-testnet
-export DONOR=donor-testnet
-export NGO=ngo-testnet
-export TREASURY=treasury-testnet
-export VAULT_ID="REPLACE_WITH_DONATION_VAULT_CONTRACT_ID"
-export REGISTRY_ID="REPLACE_WITH_NGO_REGISTRY_CONTRACT_ID"
-export TOKEN_ID="REPLACE_WITH_TOKEN_CONTRACT_ID"
+Export these shell variables once per session so every command below is copy-pasteable:
 
-export ADMIN_ADDRESS="$(stellar keys address "$ADMIN")"
-export DONOR_ADDRESS="$(stellar keys address "$DONOR")"
-export NGO_ADDRESS="$(stellar keys address "$NGO")"
-export TREASURY_ADDRESS="$(stellar keys address "$TREASURY")"
+```bash
+export NETWORK="testnet"
+export SOURCE="my-testnet-admin"
+
+# Generate and fund a testnet identity via Friendbot (skip if already funded)
+stellar keys generate "$SOURCE" --network "$NETWORK" --fund
+export ADMIN_ADDR="$(stellar keys address "$SOURCE")"
+
+# Separate donor, NGO, and treasury test identities
+stellar keys generate donor --network "$NETWORK" --fund
+stellar keys generate ngo --network "$NETWORK" --fund
+stellar keys generate treasury --network "$NETWORK" --fund
+
+export DONOR_ADDR="$(stellar keys address donor)"
+export NGO_ADDR="$(stellar keys address ngo)"
+export TREASURY_ADDR="$(stellar keys address treasury)"
+
+# Native XLM Stellar Asset Contract (SAC) on testnet
+export TOKEN_ID="$(stellar contract id asset --asset native --network "$NETWORK")"
 ```
 
-`--source` names a local Stellar CLI identity that can sign the required
-authorization. Address arguments such as `--admin`, `--donor`, and `--ngo`
-should be explicit `G...` addresses. Contract arguments such as `--registry`
-and `--token` use `C...` contract IDs. Replace the `REPLACE_WITH_...` values
-above with the contract IDs from your testnet deployment before running the
-commands.
+If `deployments.json` already contains deployed testnet contract IDs, load them with:
 
-## Initialize
-
-Normally the deploy script initializes both contracts atomically during
-deployment with `__constructor`. Use `init` only for a contract deployed
-without a constructor and not yet initialized. The address passed as `--admin`
-must match the signing identity:
-
-```sh
-stellar contract invoke --id "$VAULT_ID" --source "$ADMIN" --network "$NETWORK" \
-  -- init --admin "$ADMIN_ADDRESS"
-
-stellar contract invoke --id "$REGISTRY_ID" --source "$ADMIN" --network "$NETWORK" \
-  -- init --admin "$ADMIN_ADDRESS"
+```bash
+export REGISTRY_ID="$(node -p "require('./deployments.json').testnet.contracts['ngo-registry']")"
+export VAULT_ID="$(node -p "require('./deployments.json').testnet.contracts['donation-vault']")"
 ```
 
-## Approve a registered NGO
+---
 
-The NGO must already be registered. The admin or an authorized registry
-approver signs the request; set `--source` to that approver's identity and
-`--approver` to its address:
+## 2. Build, Deploy & Initialize (`init`)
 
-```sh
-stellar contract invoke --id "$REGISTRY_ID" --source "$ADMIN" --network "$NETWORK" \
-  -- approve_ngo --approver "$ADMIN_ADDRESS" --ngo_owner "$NGO_ADDRESS"
+You can run `STELLAR_SOURCE_ACCOUNT="$SOURCE" ./scripts/deploy-testnet.sh` to automate building, deploying, and initializing both contracts, or run each step manually:
+
+```bash
+# Build optimized release Wasm binaries
+cargo build --target wasm32v1-none --release
+
+# Deploy ngo-registry and donation-vault
+export REGISTRY_ID="$(stellar contract deploy \
+  --wasm target/wasm32v1-none/release/ngo_registry.wasm \
+  --source-account "$SOURCE" \
+  --network "$NETWORK")"
+
+export VAULT_ID="$(stellar contract deploy \
+  --wasm target/wasm32v1-none/release/donation_vault.wasm \
+  --source-account "$SOURCE" \
+  --network "$NETWORK")"
+
+# Initialize ngo-registry with ADMIN_ADDR
+stellar contract invoke \
+  --id "$REGISTRY_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
+  -- init \
+  --admin "$ADMIN_ADDR"
+
+# Initialize donation-vault with ADMIN_ADDR
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
+  -- init \
+  --admin "$ADMIN_ADDR"
 ```
 
-## Create a stream
+---
 
-The donor identity signs and funds the stream. `deposit` is in the token's
-smallest units; `rate` is smallest units per second. Use a testnet token
-contract ID for `TOKEN_ID`.
+## 3. NGO Registration & Approval (`register` / `approve`)
 
-```sh
-stellar contract invoke --id "$VAULT_ID" --source "$DONOR" --network "$NETWORK" \
-  -- create_stream --donor "$DONOR_ADDRESS" --ngo "$NGO_ADDRESS" \
-     --token "$TOKEN_ID" --deposit 100000000 --rate 1000
+```bash
+# NGO self-registers its organization name and optional metadata URI
+stellar contract invoke \
+  --id "$REGISTRY_ID" \
+  --source-account ngo \
+  --network "$NETWORK" \
+  -- register \
+  --owner "$NGO_ADDR" \
+  --name "Clean Water Foundation"
+
+# Admin (or designated approver) approves the NGO
+stellar contract invoke \
+  --id "$REGISTRY_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
+  -- approve \
+  --owner "$NGO_ADDR"
+
+# Optional: approve with an expiration timestamp (e.g. 1 year from now)
+stellar contract invoke \
+  --id "$REGISTRY_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
+  -- approve_with_expiry \
+  --owner "$NGO_ADDR" \
+  --expires_at "$(( $(date +%s) + 31536000 ))"
+
+# Verify NGO status (read-only)
+stellar contract invoke \
+  --id "$REGISTRY_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
+  -- is_verified \
+  --owner "$NGO_ADDR"
 ```
 
-The call returns the new stream ID. Use that ID to withdraw from the stream.
+---
 
-## Withdraw accrued funds
+## 4. Stream Creation (`create_stream`)
 
-The NGO identity associated with the stream must sign:
+```bash
+# Create an immediately-accruing stream (deposit: 100 XLM = 1_000_000_000 stroops, rate: 1000 stroops/sec)
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account donor \
+  --network "$NETWORK" \
+  -- create_stream \
+  --donor "$DONOR_ADDR" \
+  --ngo "$NGO_ADDR" \
+  --token "$TOKEN_ID" \
+  --deposit 1000000000 \
+  --rate 1000
 
-```sh
-stellar contract invoke --id "$VAULT_ID" --source "$NGO" --network "$NETWORK" \
-  -- withdraw --stream_id 0
+# Create a stream with a future cliff timestamp (starts accruing 1 hour from now)
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account donor \
+  --network "$NETWORK" \
+  -- create_stream_with_start \
+  --donor "$DONOR_ADDR" \
+  --ngo "$NGO_ADDR" \
+  --token "$TOKEN_ID" \
+  --deposit 1000000000 \
+  --rate 1000 \
+  --start "$(( $(date +%s) + 3600 ))"
+
+# Inspect stream state and pending accrual (stream_id = 0)
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account donor \
+  --network "$NETWORK" \
+  -- get_stream \
+  --stream_id 0
+
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account donor \
+  --network "$NETWORK" \
+  -- pending_accrual \
+  --stream_id 0
 ```
 
-## Pause or resume the vault
+---
 
-Only the vault admin can pause or unpause it:
+## 5. Withdrawals & Stream Updates (`withdraw` / `top_up` / `cancel_stream`)
 
-```sh
-stellar contract invoke --id "$VAULT_ID" --source "$ADMIN" --network "$NETWORK" \
+```bash
+# NGO withdraws accrued funds from stream 0
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account ngo \
+  --network "$NETWORK" \
+  -- withdraw \
+  --stream_id 0
+
+# NGO batch-withdraws across multiple streams
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account ngo \
+  --network "$NETWORK" \
+  -- withdraw_batch \
+  --stream_ids '[0]'
+
+# Donor tops up stream 0 with an additional 50 XLM (500_000_000 stroops)
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account donor \
+  --network "$NETWORK" \
+  -- top_up \
+  --stream_id 0 \
+  --amount 500000000
+
+# Donor updates the stream rate to 2000 stroops/sec
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account donor \
+  --network "$NETWORK" \
+  -- update_rate \
+  --stream_id 0 \
+  --new_rate 2000
+
+# Donor cancels stream 0 (settles accrued payout to NGO and refunds remainder to donor)
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account donor \
+  --network "$NETWORK" \
+  -- cancel_stream \
+  --stream_id 0
+```
+
+---
+
+## 6. Pause, Emergency Rescue & Configuration Changes (`pause` / `set_*`)
+
+```bash
+# Link the vault to ngo-registry so only verified NGOs can receive new streams
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
+  -- set_registry \
+  --registry "$REGISTRY_ID"
+
+# Configure protocol treasury and fee in basis points (e.g. 50 bps = 0.50%, max 500 bps)
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
+  -- set_treasury \
+  --treasury "$TREASURY_ADDR"
+
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
+  -- set_fee_bps \
+  --fee_bps 50
+
+# Set maximum stream rate cap (e.g. 10_000_000 stroops/sec)
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
+  -- set_max_rate \
+  --max_rate 10000000
+
+# Pause and unpause the donation vault
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
   -- pause
 
-stellar contract invoke --id "$VAULT_ID" --source "$ADMIN" --network "$NETWORK" \
+# Emergency rescue while paused (refunds 100% of remaining stream balance to donor)
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
+  -- rescue_stream \
+  --stream_id 0
+
+stellar contract invoke \
+  --id "$VAULT_ID" \
+  --source-account "$SOURCE" \
+  --network "$NETWORK" \
   -- unpause
 ```
-
-## Change vault configuration
-
-Configuration changes require the vault admin. Set a treasury before setting a
-non-zero fee; fees are in basis points (100 bps = 1% and the maximum is
-1,000 bps).
-
-```sh
-stellar contract invoke --id "$VAULT_ID" --source "$ADMIN" --network "$NETWORK" \
-  -- set_treasury --treasury "$TREASURY_ADDRESS"
-
-stellar contract invoke --id "$VAULT_ID" --source "$ADMIN" --network "$NETWORK" \
-  -- set_fee_bps --fee_bps 100
-
-stellar contract invoke --id "$VAULT_ID" --source "$ADMIN" --network "$NETWORK" \
-  -- set_min_deposit --min_deposit 1000000
-
-stellar contract invoke --id "$VAULT_ID" --source "$ADMIN" --network "$NETWORK" \
-  -- set_registry --registry "$REGISTRY_ID"
-```
-
-`set_min_deposit` is in the token's smallest units. To check a function's
-argument names for your installed CLI version, append `--help` after its name,
-for example `-- set_fee_bps --help`. For simulation without submitting, add
-`--send=no` before `--`.
