@@ -332,6 +332,16 @@ pub enum StreamStatus {
     Paused,
 }
 
+/// A stored stream and its read-only payout projection at the current ledger time.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamSummary {
+    pub stream: Stream,
+    pub accrued: i128,
+    pub net_payout: i128,
+    pub depletion_time: Option<u64>,
+}
+
 /// All admin configuration and global contract parameters returned by `get_config`.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -924,6 +934,20 @@ fn accrual_base(stream: &Stream) -> u64 {
     stream.last_update.max(stream.start)
 }
 
+fn unsettled_accrual(stream: &Stream, now: u64) -> i128 {
+    if stream.status == StreamStatus::Paused {
+        0
+    } else {
+        let elapsed = now.saturating_sub(accrual_base(stream));
+        math::accrued(stream.rate, elapsed, stream.balance)
+    }
+}
+
+fn projected_depletion_time(stream: &Stream) -> Option<u64> {
+    math::seconds_to_deplete(stream.rate, stream.balance)
+        .and_then(|seconds| accrual_base(stream).checked_add(seconds))
+}
+
 /// Settles the accrual accumulated since the stream's last checkpoint.
 ///
 /// This is shared by every operation that changes a stream's balance or rate
@@ -936,12 +960,7 @@ fn accrual_base(stream: &Stream) -> u64 {
 /// completion" event would be spurious for them. Every other caller goes
 /// through the [`settle`] wrapper, which announces the transition (issue #344).
 fn settle_core(env: &Env, stream: &mut Stream, now: u64) -> Result<i128, Error> {
-    let accrued = if stream.status == StreamStatus::Paused {
-        0
-    } else {
-        let elapsed = now.saturating_sub(accrual_base(stream));
-        math::accrued(stream.rate, elapsed, stream.balance)
-    };
+    let accrued = unsettled_accrual(stream, now);
 
     if accrued > 0 {
         // Update stream state before the external token transfer
@@ -1553,6 +1572,30 @@ impl DonationVault {
             .ok_or(Error::StreamNotFound)
     }
 
+    /// Returns the stored stream, gross accrued amount, payout after fees,
+    /// and projected depletion timestamp in one read-only call.
+    ///
+    /// Paused streams accrue nothing and have no depletion forecast until
+    /// resumed. Cancelled streams have no depletion timestamp. A drained
+    /// stream reports its last settlement timestamp.
+    pub fn stream_summary(env: Env, stream_id: u64) -> Result<StreamSummary, Error> {
+        let stream = Self::get_stream(env.clone(), stream_id)?;
+        let accrued = unsettled_accrual(&stream, env.ledger().timestamp());
+        let net_payout = accrued - compute_fee(&env, &stream.token, accrued);
+        let depletion_time = if stream.status == StreamStatus::Paused {
+            None
+        } else {
+            projected_depletion_time(&stream)
+        };
+
+        Ok(StreamSummary {
+            stream,
+            accrued,
+            net_payout,
+            depletion_time,
+        })
+    }
+
     /// Reads multiple streams in a single call, returning one entry per
     /// requested id in the same order (`None` for an id that does not exist).
     /// Read-only; requires no authorization.
@@ -1775,8 +1818,7 @@ impl DonationVault {
             .get(&DataKey::Stream(stream_id))
             .ok_or(Error::StreamNotFound)?;
 
-        Ok(math::seconds_to_deplete(stream.rate, stream.balance)
-            .and_then(|seconds| accrual_base(&stream).checked_add(seconds)))
+        Ok(projected_depletion_time(&stream))
     }
 
     /// Read-only view of the net amount the NGO would actually receive and the
@@ -1879,16 +1921,7 @@ impl DonationVault {
             .get(&DataKey::Stream(stream_id))
             .ok_or(Error::StreamNotFound)?;
 
-        // Mirror `settle`'s accrual rules so this matches what `cancel_stream`
-        // would actually refund: a paused stream accrues nothing, and a
-        // non-positive rate or a stream before its cliff accrues nothing.
-        let accrued = if stream.status == StreamStatus::Paused {
-            0
-        } else {
-            let now = env.ledger().timestamp();
-            let elapsed = now.saturating_sub(accrual_base(&stream));
-            math::accrued(stream.rate, elapsed, stream.balance)
-        };
+        let accrued = unsettled_accrual(&stream, env.ledger().timestamp());
 
         Ok(stream.balance - accrued)
     }

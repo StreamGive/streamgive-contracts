@@ -514,6 +514,98 @@ fn old_admin_loses_admin_gated_access_after_transfer() {
 }
 
 #[test]
+fn stream_summary_reports_active_accrual_after_fees_without_writes() {
+    let s = setup();
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&500);
+    s.client.set_token_fee_bps(&s.token.address, &100);
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &30);
+    let stream = s.client.get_stream(&stream_id);
+    s.env.ledger().with_mut(|l| l.timestamp += 10);
+
+    let summary = s.client.stream_summary(&stream_id);
+
+    assert!(s.env.auths().is_empty());
+    assert_eq!(summary.stream, stream);
+    assert_eq!(summary.accrued, 300);
+    assert_eq!(summary.net_payout, 297);
+    assert_eq!(summary.depletion_time, Some(stream.start + 34));
+    assert_eq!(s.client.get_stream(&stream_id), stream);
+    assert_eq!(s.token.balance(&s.ngo), 0);
+    assert_eq!(s.token.balance(&treasury), 0);
+}
+
+#[test]
+fn stream_summary_freezes_paused_accrual_and_depletion() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.client.pause_stream(&stream_id);
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    let summary = s.client.stream_summary(&stream_id);
+
+    assert_eq!(summary.stream.status, StreamStatus::Paused);
+    assert_eq!(summary.stream.balance, 1_000);
+    assert_eq!(summary.accrued, 0);
+    assert_eq!(summary.net_payout, 0);
+    assert_eq!(summary.depletion_time, None);
+}
+
+#[test]
+fn stream_summary_reports_drained_settlement_timestamp() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.env.ledger().with_mut(|l| l.timestamp += 100);
+    s.client.withdraw(&stream_id);
+    let settled_at = s.env.ledger().timestamp();
+    s.env.ledger().with_mut(|l| l.timestamp += 50);
+
+    let summary = s.client.stream_summary(&stream_id);
+
+    assert_eq!(summary.stream.status, StreamStatus::Drained);
+    assert_eq!(summary.accrued, 0);
+    assert_eq!(summary.net_payout, 0);
+    assert_eq!(summary.depletion_time, Some(settled_at));
+}
+
+#[test]
+fn stream_summary_reports_cancelled_stream_without_payout_or_forecast() {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+    let stream_id = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    s.client.cancel_stream(&stream_id);
+
+    let summary = s.client.stream_summary(&stream_id);
+
+    assert_eq!(summary.stream.status, StreamStatus::Cancelled);
+    assert_eq!(summary.accrued, 0);
+    assert_eq!(summary.net_payout, 0);
+    assert_eq!(summary.depletion_time, None);
+}
+
+#[test]
+fn stream_summary_returns_not_found_for_an_unknown_stream() {
+    let s = setup();
+
+    assert_eq!(
+        s.client.try_stream_summary(&999),
+        Err(Ok(Error::StreamNotFound))
+    );
+}
+
+#[test]
 fn pending_accrual_matches_withdraw_without_mutating_state() {
     let s = setup();
     s.token_admin.mint(&s.donor, &1_000);

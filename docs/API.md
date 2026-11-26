@@ -22,6 +22,7 @@ abort the invocation.
 | `accept_admin` | none / `Result<(), Error>` | pending admin | `NotInitialized`, `NoPendingAdmin` | `acptadmin` |
 | `cancel_admin_proposal` | none / `Result<(), Error>` | admin | `NotInitialized`, `NoPendingAdmin`, `AdminRenounced` | `canceladm` |
 | `get_stream` | `stream_id: u64` / `Result<Stream, Error>` | none | `StreamNotFound` | — |
+| `stream_summary` | `stream_id: u64` / `Result<StreamSummary, Error>` (stored stream, gross accrual, net payout, depletion time) | none | `StreamNotFound` | — |
 | `get_streams` | `ids: Vec<u64>` / `Result<Vec<Option<Stream>>, Error>` | none | `BatchLimitExceeded` | — |
 | `streams_by_donor` | `donor: Address` / `Vec<u64>` | none | — | — |
 | `streams_by_ngo` | `ngo: Address, start: u32, limit: u32` / `Vec<u64>` | none | — | — |

@@ -86,6 +86,7 @@ for what works while the vault is paused, and the
 | `admin` | Anyone | View. |
 | `pending_admin` | Anyone | View. |
 | `get_stream` | Anyone | View. |
+| `stream_summary` | Anyone | View. |
 | `get_streams` | Anyone | View. |
 | `streams_by_donor` | Anyone | View. |
 | `streams_by_ngo` | Anyone | View. |
