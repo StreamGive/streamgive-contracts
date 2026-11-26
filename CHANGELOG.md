@@ -306,12 +306,8 @@ This project does not yet follow a formal versioning scheme — each contract's
   positional payload formats are declared in code and documented in
   `docs/EVENTS.md`; consumers should update to the generated event types
   before the next contract release.
-- `scripts/deploy-testnet.sh`, `scripts/deploy-mainnet.sh`: switched to
-  atomic constructor deploys, added optional post-deploy vault configuration
-  (`STELLAR_REGISTRY_ADDRESS`, `STELLAR_TREASURY_ADDRESS`, `STELLAR_FEE_BPS`,
-  `STELLAR_MIN_DEPOSIT`), testnet overwrite guard (`--force`), mainnet
-  mandatory registry check (`--allow-no-registry` opt-in), and portable
-  self-locating paths.
+- `ngo-registry`: split `src/test.rs` into feature modules (`registration`,
+  `verification`, `admin`, and `paging`) with shared helpers (#395).
 
 ### Fixed
 
