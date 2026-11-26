@@ -45,13 +45,14 @@ validated it.
 
 | Asset | Lives in | If it's compromised or lost |
 |---|---|---|
-| Donor deposits held between `create_stream` and the last `withdraw`/`cancel_stream` | The vault's own token balance | Direct, irreversible loss for donors and NGOs. |
+| Donor deposits held between `create_stream` and the last `withdraw`/`withdraw_batch`/`cancel_stream`/`rescue_stream` | The vault's own token balance | Direct, irreversible loss for donors and NGOs. |
 | Stream accounting (`balance`, `withdrawn`, `rate`, `last_update`, `status`, `cancelled`) | `DataKey::Stream(u64)` | Double payment, revived cancelled streams, or a stream that can never be settled. |
-| Admin authority (pause, fee, treasury, registry pointer, min deposit, stream cap, grace, **upgrade**) | `DataKey::Admin` (instance storage) | Full control of fund movement via `upgrade`; see C-1. |
+| Admin authority (pause, global & per-token fees, treasury, registry pointer, min deposit, stream cap, grace, `rescue_stream`, `renounce_admin`, **upgrade**) | `DataKey::Admin`, `DataKey::AdminRenounced` (instance storage) | Full control of fund movement via `upgrade`, or permanent lockout if renounced while paused; see C-1 and T-24. |
+| Per-token fee overrides | `DataKey::TokenFeeBps(Address)` (persistent storage) | Unexpected fallback to global `fee_bps` if archived (T-25). |
 | NGO identity (`owner`, `name`, `verified`) | `DataKey::Ngo(Address)` | Donations routed to an attacker-controlled address (R-2). |
 | Next stream id / donor stream counts | `DataKey::NextStreamId`, `DataKey::DonorStreamCount(Address)` | Id reuse (streams refuse to open when the counter is missing rather than guessing an id) or an exhausted per-donor cap; see T-11. |
 | Published events | Horizon, consumed by `streamgive-backend` | Retroactive rewrites of donation totals in every downstream view. |
-| The deployed wasm hash | `deployments.json` + the chain | Whoever controls it controls the logic that custodies funds (C-2). |
+| The deployed wasm hash | `deployments.json` + the chain | Whoever controls it controls the logic that custodies funds (C-4). |
 
 ## Actors and trust
 
@@ -125,24 +126,39 @@ These are the properties the rest of this document reasons about. Each is
 listed with where it is enforced.
 
 1. **Only the NGO named on a stream can trigger a payout from it.**
-   `withdraw` → `stream.ngo.require_auth()`.
-2. **Only the donor named on a stream can add funds, change its rate, or cancel
-   it.** `top_up`, `modify_rate`, `cancel_stream` → `stream.donor.require_auth()`.
-3. **A payout can never exceed what was deposited on that stream.** `settle`
-   goes through `math::accrued`, which caps at `balance`; `record_payout` uses
-   `checked_sub`/`checked_add` and returns `ArithmeticOverflow` instead of
-   wrapping.
-4. **A cancelled stream can never be revived.** `cancel_stream` sets `cancelled`
-   permanently; `top_up` and `modify_rate` reject with `StreamCancelled`.
-5. **The protocol fee can never exceed 10%.** `set_fee_bps` enforces
-   `MAX_FEE_BPS = 1_000`; fees are only taken when a treasury is configured.
-6. **While paused, no call that moves funds out or extends an obligation
-   succeeds** — except `cancel_stream`, which stays open so donors can exit.
-7. **A stream is only opened toward a verified NGO *if* a registry is
-   configured.** With `registry() == None`, any distinct address is accepted
-   (T-19, T-21).
-8. **A donor cannot be their own NGO.** `create_stream` rejects
-   `donor == ngo` with `SelfStream`, so a stream cannot be counted as a
+   `withdraw` → `stream.ngo.require_auth()`; `withdraw_batch` verifies every
+   stream in the batch targets the same NGO (`MixedNgo`), rejects duplicate
+   ids (`DuplicateStreamId`), caps batch size at `MAX_BATCH_WITHDRAW_STREAMS`
+   (20), and requires that NGO's auth.
+2. **Only the donor named on a stream can add funds, change its rate, transfer
+   it, or cancel it.** `top_up`, `modify_rate`, `transfer_stream`,
+   `cancel_stream` → `stream.donor.require_auth()`.
+3. **A payout can never exceed what was deposited on that stream.** `settle`,
+   `withdraw`, and `withdraw_batch` go through `math::accrued`, which caps at
+   `balance`; `record_payout` uses `checked_sub`/`checked_add` and returns
+   `ArithmeticOverflow` instead of wrapping.
+4. **A cancelled or rescued stream can never be revived.** `cancel_stream` and
+   `rescue_stream` set `cancelled` permanently; `top_up`, `modify_rate`,
+   `transfer_stream`, `cancel_stream`, and `rescue_stream` reject with
+   `StreamCancelled`.
+5. **The protocol fee can never exceed 10%.** Both `set_fee_bps` and
+   `set_token_fee_bps` enforce `MAX_FEE_BPS = 1_000` and reject non-zero fees
+   when no treasury is configured (`FeeRequiresTreasury`); `clear_token_fee_bps`
+   restores fallback to the global `fee_bps`, and `compute_fee` returns 0
+   whenever no treasury is set.
+6. **While paused, no ordinary fund-moving or stream-mutating call succeeds**
+   (`create_stream`, `withdraw`, `withdraw_batch`, `top_up`, `modify_rate`,
+   `transfer_stream` all reject with `ContractPaused`) — except
+   `cancel_stream`, which stays open so donors can always exit, and
+   `rescue_stream` (admin-only), which *only* succeeds while paused
+   (`NotPaused` when active) and refunds the stream's full remaining balance
+   to the donor.
+7. **A stream is only opened, topped up, or transferred toward a verified NGO
+   *if* a registry is configured.** `create_stream`, `top_up`, and
+   `transfer_stream` call `require_verified_ngo`; with `registry() == None`,
+   any distinct address is accepted (T-19, T-20, T-21).
+8. **A donor cannot be their own NGO.** `create_stream` and `transfer_stream`
+   reject `donor == ngo` with `SelfStream`, so a stream cannot be counted as a
    committed donation while paying the donor back.
 9. **Accrual is monotonic and never negative.** `math::accrued` returns 0 for
    non-positive rate/balance or zero elapsed, `saturating_mul`s, and is covered
@@ -154,14 +170,14 @@ listed with where it is enforced.
 
 | ID | Threat | Mitigation | Residual risk |
 |---|---|---|---|
-| T-1 | A third party calls `withdraw` on someone else's stream and takes the payout. | `withdraw` → `stream.ngo.require_auth()`, checked against the address stored *on the stream*, not an argument. | None known. |
-| T-2 | A third party cancels, tops up, or re-rates another donor's stream. | `cancel_stream`, `top_up`, `modify_rate` → `stream.donor.require_auth()`, again against the stored donor. | None known. |
-| T-3 | Double payout: two `withdraw` calls in one ledger, or `top_up`/`modify_rate` racing a `withdraw`, paying the same accrual twice. | All four paths share `settle`, which advances `last_update` after payout and caps accrual at `balance`; a second call in the same ledger accrues 0 and returns `NothingToWithdraw`. | **Low / accepted:** accrual is per-second and truncated toward zero, so a sub-1-per-second stream under-pays by dust rather than over-paying. |
-| T-4 | Integer overflow or wrap on stream balances, `withdrawn`, or the stream-id counter. | `record_payout`/`create_stream` use `checked_add`/`checked_sub` → `ArithmeticOverflow`; the release profile keeps `overflow-checks = true` (see README: Release profile) so a missed checked op aborts instead of wrapping. | Low: `math::accrued` deliberately *saturates* on `rate × elapsed` rather than erroring, and the result is then capped by `balance`. |
-| T-5 | A cancelled stream is revived, or a `cancel` is replayed to inflate indexes. | `cancel_stream` sets `cancelled` permanently; `top_up`/`modify_rate` reject it; the `cancel` event is only published when something actually moved. | None known. |
-| T-6 | Donation-metric inflation through a stream that pays the donor back. | `create_stream` rejects `donor == ngo` before any transfer. | Low: a donor can still stream to a second address they control (wash donation). No on-chain defense exists; this is an off-chain reporting concern. |
-| T-7 | The fee silently takes up to 10% of a payout the NGO believed was gross. | `set_fee_bps` caps at `MAX_FEE_BPS`; the fee is only computed when a treasury is set; `withdraw` returns the net while the event carries the gross, so the split is derivable. | **Medium / accepted:** the admin can raise the fee at any time with no delay, and clients that render only event data will overstate what the NGO received — indexers must read `fee_bps()`/`treasury()` at transaction time (EVENTS.md documents this). |
-| T-8 | The fee slice is redirected to an attacker-controlled treasury right before a large withdrawal. | `set_treasury` is admin-only and emits `treasury`; `clear_treasury` reverts to paying the NGO in full. | Medium / accepted: exposure is bounded to the ≤ 10% fee; principal and stream balances cannot be redirected. |
+| T-1 | A third party calls `withdraw` or `withdraw_batch` on someone else's stream and takes the payout. | `withdraw` and `withdraw_batch` → `stream.ngo.require_auth()`, checked against the address stored *on the stream*, not an argument (`withdraw_batch` also rejects mixed NGOs with `MixedNgo`). | None known. |
+| T-2 | A third party cancels, tops up, re-rates, or transfers another donor's stream. | `cancel_stream`, `top_up`, `modify_rate`, `transfer_stream` → `stream.donor.require_auth()`, again against the stored donor. | None known. |
+| T-3 | Double payout: two `withdraw`/`withdraw_batch` calls in one ledger, or `top_up`/`modify_rate`/`transfer_stream`/`cancel_stream` racing a `withdraw`, paying the same accrual twice. | `cancel_stream`, `top_up`, `modify_rate`, and `transfer_stream` share `settle`, while `withdraw` and `withdraw_batch` run their own payout loops using the same `math::accrued` + `record_payout` accounting and advancing `last_update` (and persisting before transferring); a second `withdraw`/`withdraw_batch` in the same ledger accrues 0 and returns `NothingToWithdraw`. | **Low / accepted:** accrual is per-second and truncated toward zero, so a sub-1-per-second stream under-pays by dust rather than over-paying. |
+| T-4 | Integer overflow or wrap on stream balances, `withdrawn`, or the stream-id counter. | `record_payout`/`create_stream`/`withdraw_batch` use `checked_add`/`checked_sub` → `ArithmeticOverflow`; the release profile keeps `overflow-checks = true` (see README: Release profile) so a missed checked op aborts instead of wrapping. | Low: `math::accrued` deliberately *saturates* on `rate × elapsed` rather than erroring, and the result is then capped by `balance`. |
+| T-5 | A cancelled or rescued stream is revived, or a `cancel` is replayed to inflate indexes. | `cancel_stream` and `rescue_stream` set `cancelled` permanently; `top_up`/`modify_rate`/`transfer_stream`/`cancel_stream`/`rescue_stream` reject it with `StreamCancelled`; the `cancel` event is only published when something actually moved. | None known. |
+| T-6 | Donation-metric inflation through a stream that pays the donor back. | `create_stream` and `transfer_stream` reject `donor == ngo` (`SelfStream`) before any transfer. | Low: a donor can still stream to a second address they control (wash donation). No on-chain defense exists; this is an off-chain reporting concern. |
+| T-7 | The fee silently takes up to 10% of a payout the NGO believed was gross. | `set_fee_bps` and `set_token_fee_bps` cap at `MAX_FEE_BPS` and require a treasury when non-zero; `withdraw` returns the net and emits `(accrued, fee, net)` so the exact split is visible on-chain; `pending_payout` previews `(net, fee)`. | **Medium / accepted:** the admin can raise the global or per-token fee at any time with no delay; implicit settlements in `topup`/`ratemod`/`transfer` report gross `settled` rather than `(accrued, fee, net)` (see C-7). |
+| T-8 | The fee slice is redirected to an attacker-controlled treasury right before a large withdrawal. | `set_treasury` is admin-only and emits `treasset`; `clear_treasury` (emits `treclr`) reverts to paying the NGO in full once the global fee is 0. | Medium / accepted: exposure is bounded to the ≤ 10% fee; principal and stream balances cannot be redirected. |
 | T-9 | Accrual is manipulated through the ledger timestamp. | Accrual reads `env.ledger().timestamp()`; neither donor nor NGO supplies it. | Low / accepted: bounded by network time and consensus rules; the contracts cannot do better than the ledger clock. |
 | T-10 | Donor→NGO relationships, amounts, and rates are exposed. | None — inherent: `get_stream`, `get_streams`, `stream_count`, `pending_accrual`, `pending_payout`, `pending_refund` are public reads and every event is public. | Accepted: there is no privacy expectation on-chain. Frontends and docs must not imply otherwise. |
 
@@ -170,7 +186,7 @@ listed with where it is enforced.
 | ID | Threat | Mitigation | Residual risk |
 |---|---|---|---|
 | T-11 | Stream flooding to bloat persistent storage and make others pay rent. | Per-donor cap (`DEFAULT_MAX_STREAMS_PER_DONOR = 100`, `set_max_streams_per_donor`), read *before* the token transfer so a rejected donor moves no funds. | **Medium:** the cap is per address, so funded accounts multiply it, and `DonorStreamCount` is never decremented — a legitimate heavy user who cancels a lot is eventually locked out of `create_stream`. `min_deposit` defaults to 0, so there is no dust floor until an admin sets one. |
-| T-12 | Indefinite freeze of NGO payouts. | `pause`/`unpause` are admin-only and emit events; `cancel_stream` deliberately keeps working while paused, so donors can always exit. | **Medium / accepted:** no on-chain pause expiry, so a compromised key can freeze withdrawals indefinitely. Monitor `pause` and treat an unexplained pause as an incident. |
+| T-12 | Indefinite freeze of NGO payouts. | `pause`/`unpause` are admin-only and emit events; `cancel_stream` deliberately keeps working while paused so donors can always exit, and `rescue_stream` provides an admin-only emergency refund while paused. | **Medium / accepted:** no on-chain pause expiry, so a compromised key can freeze withdrawals indefinitely (and calling `renounce_admin` while paused makes the pause permanent; see T-24). Monitor `pause` and treat an unexplained pause as an incident. |
 | T-13 | Anyone keeps storage alive (or a cancelled record visible) at someone else's expense. | `extend_stream` and `touch_ngo` are permissionless by design and only extend TTLs; the caller pays. | Low / intentional: this is the documented escape hatch against archival (STORAGE.md). |
 | T-14 | A dormant stream is archived and its funds look unreachable. | 90-day stream TTL refreshed on every touch; `extend_stream` lets anyone keep a stream alive. | **Medium:** archival makes `get_stream`/`withdraw`/`cancel_stream` behave as `StreamNotFound` for that id until an explicit restore is paid for. Nothing is lost, but recovery needs tooling and an extra fee, and nothing obliges either party to keep a dormant stream alive. |
 | T-15 | Reentrancy through a hostile `token` address. | Every value-moving path is auth-gated on the stored donor/NGO, so a hostile token cannot manufacture the auth those paths need; Soroban rolls back the whole transaction if any inner call traps. | **Low–Medium:** there is no reentrancy guard, `create_stream` accepts any token address, and in `cancel_stream` the NGO payout happens inside `settle` *before* the stream is written back. A guard or a token allowlist would remove the class. |
@@ -205,24 +221,25 @@ listed with where it is enforced.
 | C-4 | Deploy/artifact integrity: the wrong code or the wrong admin goes live. | `deploy-mainnet.sh` requires `--confirm`, pins the Public network passphrase, requires an explicit `G…` admin address, refuses to overwrite an existing entry, and records the contract ids under `mainnet` in `deployments.json`; CI runs `fmt`, `clippy -D warnings`, `cargo doc -D warnings`, a `wasm32v1-none` release build, a wasm-size check, and the test suite. | **Medium:** nothing verifies that the deployed wasm corresponds to a reviewed commit (no reproducible-build check, no source verification), and `deployments.json` is a plain file consumers must not trust blindly — confirm `admin()`, `registry()`, `fee_bps()`, `treasury()`, and `paused()` on-chain before using them. |
 | C-5 | Admin configuration changes are invisible to event-only monitoring. | Every admin-gated configuration change now publishes a typed event: `upgrade` in **both** contracts, the registry's approver-list management (`add_approver` → `apadd`, `remove_approver` → `aprem`), the vault setters `set_min_deposit` (`mindep`), `set_registry` (`regset`), `clear_registry` (`regclr`), `set_cancel_grace_ledgers` (`grceset`), `clear_treasury` (`treclr`), and `init`/the constructor in both contracts (`init`), matching the existing `feeset`/`treasset`/`maxstrm` pattern. | **Low:** a detector built from events alone can now see every code and configuration change, but only *after* the transaction lands — there is no timelock, so this is detection, not prevention, and a compromised key can still `upgrade` and drain in a single ledger before anyone reacts. Keep polling `admin()`, the config getters, and the deployed wasm hash as a backstop, and consider a timelock (see C-1). |
 | C-6 | Phishing: a fake client builds a `create_stream` toward an attacker's address while displaying the real NGO's name. | None on-chain — the wallet shows what it is asked to sign, and the contracts cannot know which frontend built the transaction. | **Human-factor risk, frontend-owned:** show the destination address and its `verified` state at signing time, keep an allow-listed origin, and make the contract ids easy to verify. |
-| C-7 | Indexers derive wrong donation/payout totals from events. | `withdraw` events carry the gross accrued amount while the entry point returns the fee-adjusted net, and no fee event is emitted; `cancel` events are suppressed when nothing moved; `top_up`/`modify_rate` settle an implicit payout with no `withdraw` event. | **Medium (off-chain correctness):** totals must be reconstructed with `fee_bps()`/`treasury()` as of the transaction and implicit settlements accounted for; EVENTS.md documents each case, but a naive indexer will overstate payouts. |
-| C-8 | The vault's dependency on `ngo-registry`'s interface. | The vault calls `try_get_ngo` and maps any failure to "not verified" (fail-closed), so an interface break blocks new streams rather than admitting unverified ones. | **Medium / accepted:** a registry upgrade that renames or removes that entry point breaks verification for all new streams, and a malicious registry can verify anything. Both admins are, today, the same operator — a trust concentration rather than an interface race. |
+| C-7 | Indexers derive wrong donation/payout totals from events. | `withdraw` (and `withdraw_batch`) events now carry `(accrued, fee, net)` directly, and `topup`, `ratemod`, and `transfer` include the gross `settled` amount in their payloads; `cancel` events carry `(accrued, refund)` and are suppressed when nothing moved. | **Low–Medium (off-chain correctness):** implicit settlements in `topup`, `ratemod`, `transfer`, and `cancel` report gross `settled`/`accrued` without the fee/net breakdown, so indexers deriving net NGO payouts for those paths must still combine them with the effective fee (`token_fee_bps`/`fee_bps`) and `treasury()` at transaction time (EVENTS.md documents each shape). |
+| C-8 | The vault's dependency on `ngo-registry`'s interface. | The vault calls `try_get_ngo` and maps any failure to "not verified" (fail-closed), so an interface break blocks new streams rather than admitting unverified ones. | **Medium / accepted:** a registry upgrade that renames or removes that entry point breaks verification for all new streams, top-ups, and transfers, and a malicious registry can verify anything. Both admins are, today, the same operator — a trust concentration rather than an interface race. |
 
 ### Why the admin boundary dominates
 
-Every other threat here is a bounded failure: a bad fee costs at most 10% of
-future accruals, a bad treasury only captures that fee, a bad pause freezes
-liquidity but leaves `cancel_stream` open, and none of them can move a stream's
-principal. `upgrade` is different in kind — it replaces the code that holds the
-funds while keeping the balance, and nothing on-chain delays, limits, or
-detects it. So "how bad is a compromised admin?" is really "as bad as the worst
-code they can deploy".
+Every other threat here is a bounded failure: a bad global or per-token fee
+costs at most 10% of future accruals, a bad treasury only captures that fee, a
+bad pause freezes liquidity but leaves `cancel_stream` open (while
+`rescue_stream` only refunds `stream.donor`), and none of them can move a
+stream's principal to an attacker. `upgrade` is different in kind — it replaces
+the code that holds the funds while keeping the balance, and nothing on-chain
+delays, limits, or detects it. So "how bad is a compromised admin?" is really
+"as bad as the worst code they can deploy".
 
 The cheapest real improvements, in order: put both admin keys behind a
-multisig; monitor `propadmin`/`acptadmin` (the transfer events) alongside
-`feeset`/`treasury`/`pause`/`maxstrm` and the code/configuration events
-`init`/`upgrade`/`treclr`/`mindep`/`grceset`/`regset`/`regclr`; and add a timelock to
-`upgrade` so a code change can be reviewed before it takes effect.
+multisig; monitor `propadmin`/`acptadmin`/`canceladm`/`renounce` alongside
+`feeset`/`tokfeeset`/`tokfeeclr`/`treasset`/`treclr`/`pause`/`unpause`/`rescue`/`maxstrm`
+and `init`/`upgrade`/`mindep`/`grceset`/`regset`/`regclr`; and add a timelock
+to `upgrade` so a code change can be reviewed before it takes effect.
 
 ### Why stalled funds are the most likely user-visible loss
 
@@ -243,17 +260,17 @@ threats above; most of them are not fixed today.
 | # | Item | Threats |
 |---|---|---|
 | 1 | Put both admin keys behind a multisig and document an upgrade procedure (who approves, how the wasm hash is reviewed, what monitoring runs during the window). | C-1, R-4, R-7 |
-| 2 | Wire the now-emitted code/configuration events (`init`, `upgrade`, `treclr`, `mindep`, `grceset`, `regset`, `regclr`) into alerting, and add a timelock on `upgrade` so detection becomes prevention. | C-5 |
-| 3 | Treat `init` as part of the deploy transaction in operator runbooks, and verify `admin()` (both contracts) plus `registry()` (vault) after every mainnet deploy. | C-3, T-21, R-6 |
-| 4 | Decide and document the behavior when an NGO's payout destination can't receive the token: make the cancel-time payout best-effort, or reject the destination at creation time. | T-17, T-21 |
+| 2 | Wire admin code/configuration events (`init`, `upgrade`, `propadmin`, `acptadmin`, `canceladm`, `renounce`, `feeset`, `tokfeeset`, `tokfeeclr`, `treasset`, `treclr`, `mindep`, `grceset`, `regset`, `regclr`, `pause`, `unpause`, `rescue`, `maxstrm`) into alerting, and add a timelock on `upgrade` so detection becomes prevention. | C-1, C-5 |
+| 3 | Verify `admin()` (both contracts) and `registry()` (vault) after every mainnet deploy, and ensure `STELLAR_REGISTRY_ADDRESS` is configured rather than opting out with `--allow-no-registry`. | C-3, T-21, R-6 |
+| 4 | Decide and document the behavior when an NGO's payout destination can't receive the token: make the cancel-time payout best-effort, or reject the destination at creation time. | T-17, T-21, T-26 |
 | 5 | Set a non-zero `min_deposit` in production and revisit whether `DonorStreamCount` should decrement on cancellation (it is currently a lifetime cap that can lock a heavy user out). | T-11 |
-| 6 | Reject empty/whitespace NGO names, and state in the registry docs that names are neither unique nor reserved; drive every client display off `verified` plus the address. | R-2, C-6 |
-| 7 | Add a way to clear or repoint the vault's registry pointer deliberately, and document the "fail-closed ⇒ global outage" consequence of a bad pointer. | Mitigated by `clear_registry` (issue #278); what remains is documenting that clearing disables NGO verification until repointed. |
-| 8 | Add a reentrancy guard and/or an allowlist of donation tokens, so the token address is no longer an unbounded input. | T-15, T-16 |
-| 9 | Fix the `StreamStatus` transition on `top_up` so a re-funded stream doesn't read as `Drained`. | T-18 |
-| 10 | Make `ngo_count()` mean something well-defined (live entries) or rename it; align its counter with the checked-arithmetic style used in the vault. | R-5 |
+| 6 | Empty, whitespace-only, invisible-format-only, and control-character NGO names are now rejected in `register` and `update_name`; what remains is filtering bidirectional override characters if desired, documenting that names are neither unique nor reserved, and driving every client display off `verified` plus the full address. | R-2, C-6 |
+| 7 | `clear_registry` now allows unsetting a bad registry pointer; what remains is documenting and alerting on the consequence that clearing disables NGO verification until repointed via `set_registry`. | T-19, T-21 |
+| 8 | Add a reentrancy guard and/or an allowlist of donation tokens, persist stream state before transferring in `rescue_stream`, and persist before `settle`'s transfer so the token address is no longer an unbounded reentrancy surface. | T-15, T-16, T-23 |
+| 9 | Guard `renounce_admin` against being called while the vault is paused (or document strict operator pre-checks), so the vault cannot be permanently frozen. | T-12, T-24 |
+| 10 | Refresh `DataKey::TokenFeeBps(token)` TTL on payouts (or monitor its 30-day TTL) so per-token fee overrides cannot silently archive and fall back to global `fee_bps`, and decide whether `clear_treasury` should also reject when per-token fees are non-zero. | T-25 |
 | 11 | Verify the deployed wasm against a reviewed commit (reproducible build + source verification) instead of trusting `deployments.json`. | C-4 |
-| 12 | Keep indexer docs and the README error table in sync with the contracts (gross vs net events, implicit settlements, and the `NameTooLong`/`InvalidName` drift). | C-7, R-2 |
+| 12 | Keep indexer docs and the README error table in sync with the contracts (implicit settlement fee splits in `topup`/`ratemod`/`transfer`/`cancel`, and error codes 24–25). | C-7 |
 
 ## Assumptions this model relies on
 

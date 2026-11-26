@@ -10,36 +10,81 @@ This project does not yet follow a formal versioning scheme — each contract's
 
 ## [Unreleased]
 
+### Changed
+
+- `donation-vault`: split `lib.rs` into `events.rs`, `types.rs`, and `storage.rs` modules. No behaviour change. See issue #393.
+
 ### Added
 
+- `donation-vault`: read-only `preview_stream` view returning the estimated
+  stream duration, the effective fee, and the first validation error before a
+  stream is created. Shares its token/amount and configured-limit checks with
+  `create_stream`, so the preview cannot drift (#438).
+- `ngo-registry`: `VerificationStatus` enum and `verification_status(owner)` view that distinguishes Unknown/Pending/Verified/Expired/Revoked. Closes #448.
+
+### Added
+
+- `ngo-registry`: admin-gated `pause_registrations` / `resume_registrations`
+  switch and `registrations_paused` view to block new `register` calls with
+  `Error::RegistrationsPaused` (code 16) while keeping all other entry points
+  operational. Emits `regrpause` and `regresume` events.
 - `donation-vault`: bounded `cancel_streams` entry point so a donor can cancel
   several streams in one transaction, with one authorization and one refund
   per stream. Rejects foreign or already-cancelled streams and is
   all-or-nothing. Adds `Error::NotStreamOwner` (code 40).
+- `donation-vault`: `set_registry` now probes the candidate with `ngo_count`
+  and rejects addresses that are not an NGO registry with the new append-only
+  `Error::InvalidRegistry` (code 45), leaving the previously configured
+  registry in place (#406).
 - `donation-vault`: contract skeleton with stream storage schema.
-- `donation-vault`: `create_stream`, `withdraw`, `cancel_stream`, `top_up`,
-  and `modify_rate` for the streaming donation lifecycle.
+- `donation-vault`: `create_stream`, `withdraw`, `withdraw_batch`,
+  `cancel_stream`, `rescue_stream`, `top_up`, `modify_rate`, and
+  `transfer_stream` for the full streaming donation lifecycle.
+- `donation-vault`: `withdraw_batch` to claim accrued payouts across up to
+  `MAX_BATCH_WITHDRAW_STREAMS` (20) unique streams belonging to the same NGO
+  in one transaction, aggregating net and fee transfers per token.
+- `donation-vault`: admin-only `rescue_stream` emergency escape hatch while
+  paused, refunding a stream's full remaining balance directly to the donor
+  without settling accrual to the NGO and emitting `rescue`.
+- `donation-vault`: donor-gated `transfer_stream` to reassign an active stream
+  to a different verified NGO after settling prior accrual to the old NGO,
+  emitting `transfer`.
 - `donation-vault`: admin-gated `pause` / `unpause` for fund-moving actions.
-- `donation-vault`: optional protocol fee (`set_fee_bps` / `fee_bps`) with
-  treasury payout (`set_treasury` / `treasury`).
-- `donation-vault`: `clear_token_fee_bps` to remove a per-token fee override,
-  restoring the global fee. Emits `tokfeeclr`.
-- `donation-vault`, `ngo-registry`: unit test coverage for `upgrade` entry
-  points across both contracts, verifying admin authorization requirements,
-  non-admin rejection, and state preservation.
-- `donation-vault`: emit `treasset` event on `set_treasury` so off-chain
-  indexers can track protocol fee destination changes.
+- `donation-vault`: optional protocol fee (`set_fee_bps` / `fee_bps` /
+  `max_fee_bps`) with treasury payout (`set_treasury` / `clear_treasury` /
+  `treasury`).
+- `donation-vault`: per-token protocol fee overrides (`set_token_fee_bps`,
+  `clear_token_fee_bps`, `token_fee_bps`) stored in persistent storage,
+  emitting `tokfeeset` and `tokfeeclr`.
+- `donation-vault`: admin-configurable minimum deposit floor
+  (`set_min_deposit` / `min_deposit`), enforced on `create_stream` and
+  `top_up` (`Error::DepositTooLow`) and emitting `mindep`.
+- `donation-vault`: per-donor stream cap (`set_max_streams_per_donor` /
+  `max_streams_per_donor`, defaulting to `100`), enforced before token
+  transfer (`Error::StreamLimitExceeded`) and emitting `maxstrm`.
+- `donation-vault`: optional NGO registry verification (`set_registry` /
+  `clear_registry` / `registry`), fail-closed and checked on `create_stream`,
+  `top_up`, and `transfer_stream` (`Error::NgoNotVerified`), emitting
+  `regset` and `regclr`.
+- `donation-vault`: `total_donated` getter tracking cumulative deposits and
+  top-ups across all streams.
+- `donation-vault`: read-only views `get_streams` (batch lookup capped at
+  `MAX_BATCH_GET_STREAMS = 40`), `streams_by_donor`, `stream_count`,
+  `pending_accrual`, `pending_payout`, `depletion_time`, `get_config`, and
+  `allowed_tokens`.
 - `donation-vault`: admin-configurable `cancel_grace_ledgers` retention for
   cancelled streams, with TTL coverage for indexing after cancellation.
 - `donation-vault`: read-only `pending_accrual` view.
+- `donation-vault`: tests that nothing accrues while a stream is paused and that
+  accrual restarts from the resume time. `pending_accrual` and `pending_payout`
+  now return zero for a paused stream, matching what `settle` pays.
+- `donation-vault`: `pause_stream` now returns `Error::StreamDrained` (43) for a
+  drained stream and `Error::StreamEmpty` (44) for an empty one instead of
+  `StreamCancelled`, which is kept for real cancellations only.
 - `donation-vault`: regression coverage for one-stroop-per-second streams and
   their zero-rounded protocol fee.
 - `DataKey` enums now derive `Debug` in both contracts for clearer storage-key
   diagnostics.
-- `donation-vault`: read-only `allowed_tokens` getter for frontend token pickers.
-- `donation-vault`: two-step admin transfer via `propose_admin` /
-  `accept_admin`.
-- `donation-vault`: reject self-admin proposals with `Error::InvalidAdmin`.
 - `ngo-registry`: contract skeleton with storage types and `init`.
 - `ngo-registry`: NGO application/registration via `register`.
 - `ngo-registry`: admin-gated `approve_ngo`.
@@ -147,6 +192,10 @@ This project does not yet follow a formal versioning scheme — each contract's
   addresses alongside `next`, the index to resume from, so clients can page
   through the registry without recomputing the cursor and can tell the final
   page from a full one. `list_ngos` is unchanged (#351).
+- `ngo-registry`: `owner_by_name(name)` looks up an NGO's owner address by its
+  exact name through an index kept in sync on `register`, `update_name`,
+  `unregister`, `remove_ngo` and `reject_ngo`. Entries registered before this
+  change are not indexed until they rename (#447).
 - `ngo-registry`: `verified_count()` getter so dashboards can read the number of
   verified NGOs without listing the registry. The count is backed by a
   `DataKey::VerifiedCount` instance key kept in step by every transition:
@@ -181,9 +230,24 @@ This project does not yet follow a formal versioning scheme — each contract's
   balance (the sum of its streams' `balance`) before `sweep_surplus` is used, or
   the whole token balance would read as sweepable surplus. No such deployment
   exists yet, so no migration entry point is added.
+- `donation-vault`: admin-gated `sweep_surplus_to(token, amount, destination)`
+  recovers misplaced tokens to an explicit address without requiring a
+  configured treasury. It applies the same committed-balance ceiling as
+  `sweep_surplus`, rejects the vault itself with
+  `Error::InvalidSweepDestination` (code 40), and emits `sweep` naming the
+  destination (#439).
+- `donation-vault`: read-only `active_streams_by_ngo(ngo, start, limit)` pages
+  through an NGO's live streams only, skipping `Cancelled` and `Drained` ones.
+  It returns an `ActiveStreamsPage` with the ids plus the `next` position to
+  continue from, so callers can enumerate open positions without fetching
+  finished streams (#440).
 
 ### Changed
 
+- `donation-vault`: the `sweep` event's final data field is now named
+  `destination` instead of `treasury`, since `sweep_surplus_to` can send the
+  surplus anywhere. Positional XDR encoding is unchanged, so existing indexers
+  keep decoding it (#439).
 - **BREAKING** `ngo-registry`: `approve_ngo`, `batch_approve`, and `revoke_ngo`
   now take the acting address as a leading argument
   (`approve_ngo(approver: Address, ngo_owner: Address)`,
@@ -265,7 +329,26 @@ This project does not yet follow a formal versioning scheme — each contract's
   `Error::ArithmeticOverflow` if the fee/net split cannot be computed,
   instead of reporting a fee of zero (#332).
 - `donation-vault`: `set_treasury` rejects the vault's own address with
-  `Error::InvalidTreasury`, so protocol fees can't be locked in the
-  contract.
+  `Error::InvalidTreasury`, so protocol fees can't be locked in the contract.
+- `donation-vault`: `create_stream`, `top_up`, `cancel_stream`, and `settle`
+  update stream state before external token transfers.
+- `donation-vault`: `cancel_stream` returns `Error::StreamCancelled` early
+  instead of rewriting already-cancelled streams, and suppresses duplicate
+  `cancel` events when nothing moved.
+- `donation-vault`: `settle`, `withdraw`, `withdraw_batch`, and
+  `transfer_stream` mark streams `StreamStatus::Drained` when balance reaches
+  zero, and `top_up` reactivates `Drained` streams back to
+  `StreamStatus::Active`.
+- `donation-vault`: `withdraw_batch` bounds batch size
+  (`Error::BatchLimitExceeded`), rejects duplicate stream IDs
+  (`Error::DuplicateStreamId`), returns `Error::NothingToWithdraw` when no
+  stream pays out, and computes per-stream fees consistently with `withdraw`.
+- `donation-vault`: `modify_rate` and `transfer_stream` return early as
+  no-ops without emitting events when the new value matches the current one.
+- `ngo-registry`: `NgoCount` is incremented on `register` and decremented on
+  `unregister` and `remove_ngo` with checked arithmetic; `total_ngos` reads
+  the same counter as `ngo_count`.
+- `ngo-registry`: `update_name` only writes storage and emits `renamed` when
+  the name actually changes.
 
 [Unreleased]: https://github.com/StreamGive/streamgive-contracts/compare/main...HEAD

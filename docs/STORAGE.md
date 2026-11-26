@@ -66,12 +66,14 @@ eligible for archival.
 | `NgoCount` | Instance | 30d / 29d | Lifetime count of NGO registrations. |
 | `TotalNgos` | Instance | 30d / 29d | Reserved legacy key retained for storage-layout compatibility; callers use `NgoCount`. |
 | `Ngo(Address)` | Persistent | 90d / 89d | One NGO's registry entry (name, verified flag), keyed by its owner address. |
+| `OwnerByName(String)` | Persistent | 90d / 89d | The owner that claimed an NGO name, read by `owner_by_name`. Set by `register` and `update_name`, cleared by `update_name`, `unregister`, `remove_ngo` and `reject_ngo`; refreshed by `touch_ngo`. |
 | `OwnerIndexCount` | Instance | 30d / 29d | Current number of owners in the registry index. |
 | `OwnerByIndex(u32)` | Persistent | 90d / 89d | Owner address at an index in registration order. |
 | `IndexByOwner(Address)` | Persistent | 90d / 89d | Reverse index from owner address to its registration index. |
 | `Approvers` | Instance | 30d / 29d | Addresses authorized to approve, reject, and revoke NGOs. |
 | `VerifiedCount` | Instance | 30d / 29d | Stored count of entries whose verification flag is set. |
 | `VerifyPeriod` | Instance | 30d / 29d | Verification lifetime in seconds; zero means no expiry. |
+| `RegistrationsPaused` | Instance | 30d / 29d | Whether new registrations are paused by the admin. Absent or `false` means registrations are open. |
 
 As with `donation-vault`, the instance TTL is refreshed on every
 state-changing call via `extend_instance_ttl`. Each `Ngo(Address)` entry

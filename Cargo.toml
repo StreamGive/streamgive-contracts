@@ -2,6 +2,15 @@
 resolver = "2"
 members = ["contracts/*"]
 
+[workspace.dependencies]
+common = { path = "contracts/common" }
+
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+
 [profile.release]
 opt-level = "z"
 overflow-checks = true

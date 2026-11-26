@@ -25,7 +25,8 @@ layout stable. Event type names include `RegisterEvent`, `RenamedEvent`,
 `UpgradedEvent`, `ConfigSnapshotEvent`, `UpgradeProposedEvent`,
 `UpgradeCancelledEvent`, `UpgradeDelaySetEvent`, `ApproverAddedEvent`,
 `ApproverRemovedEvent`,
-`MetadataUriSetEvent`, `RenewedEvent`, `VerifyPeriodSetEvent`, `CreatedEvent`,
+`MetadataUriSetEvent`, `RenewedEvent`, `VerifyPeriodSetEvent`, `RegistrationsPausedEvent`,
+`RegistrationsResumedEvent`, `CreatedEvent`,
 `WithdrawnEvent`, `DrainedEvent`, `CancelledStreamEvent`, `RescuedStreamEvent`,
 `ToppedUpEvent`, `RateModifiedEvent`, `TransferStreamEvent`,
 `PausedStreamEvent`, `ResumedStreamEvent`, and `SurplusSweptEvent`.
@@ -62,6 +63,25 @@ transfer.
 | | |
 |---|---|
 | Topics | `("canceladm",)` |
+| Data | `()` (no payload) |
+
+### `regrpause`
+
+Emitted by `pause_registrations` when the admin closes the registry to new
+applications.
+
+| | |
+|---|---|
+| Topics | `("regrpause",)` |
+| Data | `()` (no payload) |
+
+### `regresume`
+
+Emitted by `resume_registrations` when the admin re-opens the registry.
+
+| | |
+|---|---|
+| Topics | `("regresume",)` |
 | Data | `()` (no payload) |
 
 ### `register`
@@ -474,7 +494,11 @@ contract.
 | | |
 |---|---|
 | Topics | `("regset",)` |
-| Data | `registry: Address` (the new registry address) |
+| Data | `(registry: Address, previous_registry: Option<Address>)` |
+
+The previous registry is `None` (XDR void) when no registry was configured,
+including after a clear. Historical `regset` events contain a single address.
+Indexers reading both versions can distinguish them by the payload shape.
 
 Once set, `create_stream` verifies the NGO against this registry. To clear the
 registry pointer back to `None`, the admin calls `clear_registry` (emitting `regclr`).
@@ -582,19 +606,21 @@ timelock lasts.
 
 ### `sweep`
 
-Emitted by `sweep_surplus` when an admin moves tokens that were sent to the
-vault by mistake to the treasury.
+Emitted by `sweep_surplus` and `sweep_surplus_to` when an admin moves tokens
+that were sent to the vault by mistake to an explicit destination.
 
 | | |
 |---|---|
 | Topics | `("sweep", token: Address)` |
-| Data | `(amount: i128, treasury: Address)` |
+| Data | `(amount: i128, destination: Address)` |
 
 `amount` never exceeds the surplus above the token's committed balance (the sum
 of stream balances the vault holds), so a sweep can never touch funds belonging
-to streams. `treasury` is the payout address the surplus went to. An indexer can
-reconstruct the recoverable surplus at any time as the vault's token balance
-minus `committed_balance(token)` (#346).
+to streams. `destination` is the address the surplus went to: the configured
+treasury for `sweep_surplus`, or the caller-supplied address for
+`sweep_surplus_to` (#439). An indexer can reconstruct the recoverable surplus
+at any time as the vault's token balance minus `committed_balance(token)`
+(#346).
 
 ### `rescue`
 
@@ -622,6 +648,20 @@ much of it accrues to the NGO per second (see [`math::accrued`](../contracts/don
 `memo` is the donor's optional free-form tag, e.g. a campaign id, capped at
 `MAX_MEMO_BYTES` (32) bytes and empty when none was supplied (#341). It is a
 short label only — never truncate or reinterpret it.
+
+### `memoset`
+
+Emitted by `set_memo` when a donor replaces a stream's memo (#441).
+
+| | |
+|---|---|
+| Topics | `("memoset", stream_id: u64)` |
+| Data | `(old_memo: Bytes, new_memo: Bytes)` |
+
+Both values are carried so an indexer can update its copy without having
+retained the previous memo. `new_memo` is empty when the donor cleared the
+tag, and never exceeds `MAX_MEMO_BYTES` (32) bytes; a longer one is rejected
+with `MemoTooLong` and nothing is written.
 
 ### `withdraw`
 

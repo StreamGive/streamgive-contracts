@@ -107,7 +107,7 @@ while (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
 Both contracts return `Result<_, Error>`. A failed invocation's simulation
 or transaction result carries the numeric code (e.g. `Error(6)`), not the
 variant name — map it back using the tables in the
-[README](../README.md#error-codes) (`donation-vault` codes 1–38,
+[README](../README.md#error-codes) (`donation-vault` codes 1–41,
 `ngo-registry` codes 1–15). Build a lookup once per contract rather than
 hardcoding numbers inline, so a future append to the table only needs
 updating in one place:

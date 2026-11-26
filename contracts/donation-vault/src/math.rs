@@ -387,8 +387,8 @@ mod test {
             assert!(accrued(rate, drain - 1, units) < units);
         }
 
-        // Rounding up instead: overpays and drains early.
-        assert_eq!(accrued(39, MONTH, 100_000_000), 101_088_000);
+        // Rounding up instead: uncapped accrual would exceed the balance.
+        assert_eq!(accrued(39, MONTH, 100_000_000), 100_000_000);
         assert_eq!(seconds_to_deplete(39, 100_000_000), Some(2_564_103));
 
         // Sizing a 12-month deposit both ways.

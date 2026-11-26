@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a new contract feature, entry point, or improvement
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Target area
+      description: Which contract or component would this feature touch?
+      options:
+        - donation-vault
+        - ngo-registry
+        - scripts / deployment
+        - docs
+        - CI / tooling
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem does this solve, or what use case is currently missing?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed design
+      description: Describe the proposed entry points, storage changes, events, error variants, or authorization rules.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What observable behavior, tests, and documentation should be in place for this to be done?
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any alternative approaches, trade-offs, or wasm size / gas implications?

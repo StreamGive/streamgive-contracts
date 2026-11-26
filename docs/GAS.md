@@ -88,7 +88,7 @@ functions are the ones worth measuring:
 | Streams | `create_stream`, `create_stream_with_start`, `create_stream_with_memo`, `withdraw`, `withdraw_batch`, `withdraw_all`, `cancel_stream`, `rescue_stream`, `top_up`, `modify_rate`, `transfer_stream`, `extend_stream` |
 | Admin | `__constructor`, `init`, `propose_admin`, `accept_admin`, `cancel_admin_proposal`, `renounce_admin`, `pause`, `unpause`, `upgrade` |
 | Configuration | `set_treasury`, `clear_treasury`, `set_fee_bps`, `set_token_fee_bps`, `clear_token_fee_bps`, `set_min_deposit`, `set_cancel_grace_ledgers`, `set_max_streams_per_donor`, `set_max_rate`, `clear_max_rate`, `set_min_duration`, `set_registry`, `clear_registry`, `set_payout_address` |
-| Read-only | `admin`, `pending_admin`, `get_stream`, `get_streams`, `streams_by_donor`, `stream_count`, `total_donated`, `pending_accrual`, `pending_payout`, `pending_refund`, `depletion_time`, `paused`, `get_config`, `treasury`, `fee_bps`, `max_fee_bps`, `token_fee_bps`, `allowed_tokens`, `min_deposit`, `cancel_grace_ledgers`, `max_streams_per_donor`, `max_rate`, `min_duration`, `registry`, `payout_address` |
+| Read-only | `admin`, `pending_admin`, `get_stream`, `get_streams`, `streams_by_donor`, `stream_count`, `total_donated`, `pending_accrual`, `pending_payout`, `pending_refund`, `depletion_time`, `preview_stream`, `paused`, `get_config`, `treasury`, `fee_bps`, `max_fee_bps`, `token_fee_bps`, `allowed_tokens`, `min_deposit`, `cancel_grace_ledgers`, `max_streams_per_donor`, `max_rate`, `min_duration`, `registry`, `payout_address` |
 
 Read-only functions still consume CPU and read entries, but write nothing.
 

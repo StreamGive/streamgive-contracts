@@ -192,6 +192,14 @@ compute_wasm_hash() {
 NGO_REGISTRY_WASM_HASH=$(compute_wasm_hash "$WASM_DIR/ngo_registry.wasm")
 DONATION_VAULT_WASM_HASH=$(compute_wasm_hash "$WASM_DIR/donation_vault.wasm")
 
+# Capture the git commit for deployment verification
+GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+if [ "$GIT_COMMIT" != "unknown" ]; then
+  echo "Git commit: $GIT_COMMIT"
+else
+  echo "Warning: could not determine git commit (not a git repository or git not available)"
+fi
+
 deploy_contract() {
   local wasm_name="$1"
   stellar contract deploy \
@@ -287,6 +295,7 @@ NGO_REGISTRY_ID="$NGO_REGISTRY_ID" \
 DONATION_VAULT_ID="$DONATION_VAULT_ID" \
 NGO_REGISTRY_WASM_HASH="$NGO_REGISTRY_WASM_HASH" \
 DONATION_VAULT_WASM_HASH="$DONATION_VAULT_WASM_HASH" \
+GIT_COMMIT="$GIT_COMMIT" \
   node -e '
     const fs = require("fs");
     const file = process.env.DEPLOYMENTS_FILE;
@@ -304,6 +313,7 @@ DONATION_VAULT_WASM_HASH="$DONATION_VAULT_WASM_HASH" \
         "ngo-registry": process.env.NGO_REGISTRY_WASM_HASH,
         "donation-vault": process.env.DONATION_VAULT_WASM_HASH,
       },
+      git_commit: process.env.GIT_COMMIT,
     };
     if (existing.mainnet) entry.mainnet = existing.mainnet;
     const tmp = file + ".tmp";

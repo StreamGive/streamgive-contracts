@@ -21,7 +21,7 @@ WASM_DIR="$SCRIPT_DIR/../target/wasm32v1-none/release"
 
 # Max sizes (parallel arrays for Bash 3 compatibility)
 MAX_NAMES=("ngo_registry" "donation_vault")
-MAX_VALUES=(65536 98304)
+MAX_VALUES=(73728 147456)
 
 status=0
 

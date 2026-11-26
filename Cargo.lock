@@ -328,6 +328,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "common"
+version = "0.1.0"
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -630,6 +634,7 @@ dependencies = [
 name = "donation-vault"
 version = "0.1.0"
 dependencies = [
+ "common",
  "ngo-registry",
  "proptest",
  "soroban-sdk",
@@ -1190,6 +1195,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "ngo-registry"
 version = "0.1.0"
 dependencies = [
+ "common",
  "soroban-sdk",
 ]
 

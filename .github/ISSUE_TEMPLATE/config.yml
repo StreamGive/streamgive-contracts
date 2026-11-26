@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: mailto:security@streamgive.io
+    about: Do not open a public issue for vulnerabilities — see SECURITY.md and email security@streamgive.io.

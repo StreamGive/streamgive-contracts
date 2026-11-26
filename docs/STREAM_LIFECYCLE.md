@@ -41,6 +41,10 @@ Key concepts:
   reported on the `created` event; anything over `MAX_MEMO_BYTES` (32) bytes is
   rejected with `Error::MemoTooLong` rather than truncated. A plain
   `create_stream` stores an empty memo.
+- `set_memo` lets the donor replace that tag later (issue #441), under the
+  same `MAX_MEMO_BYTES` limit, and publishes a `memoset` event carrying the old
+  and new values. It is rejected with `Error::StreamCancelled` once the stream
+  is cancelled; the memo has no effect on accrual either way.
 - Every payout is checkpointed, so `last_update` always marks the last time
   the stream was settled.
 
