@@ -61,7 +61,7 @@ abort the invocation.
 | `registry` | none / `Option<Address>` | none | — | — |
 | `set_payout_address` | `ngo: Address, payout: Address` / `Result<(), Error>` | NGO owner | `NotInitialized`, `AdminRenounced` | `payoutset` |
 | `payout_address` | `ngo: Address` / `Option<Address>` | none | — | — |
-| `create_stream` | `donor, ngo, token: Address, deposit, rate: i128` / `Result<u64, Error>` | donor | `InvalidAmount`, `DepositTooLow`, `StreamLimitExceeded`, `NgoNotVerified`, `ContractPaused`, `SelfStream`, `InvalidNgo`, `InvalidToken`, `RateTooHigh`, `StreamTooShort`, `ArithmeticOverflow` | `created` |
+| `create_stream` | `donor, ngo, token: Address, deposit, rate: i128` / `Result<u64, Error>` | donor | `InvalidAmount`, `DepositTooLow`, `StreamLimitExceeded`, `NgoNotVerified`, `ContractPaused`, `SelfStream`, `InvalidNgo`, `InvalidToken`, `RateTooHigh`, `StreamTooShort`, `TokenDepositCapExceeded`, `ArithmeticOverflow` | `created` |
 | `create_stream_with_start` | above plus `start: u64` / `Result<u64, Error>` | donor | above plus `StartTooFar` | `created` |
 | `create_stream_with_memo` | above plus `memo: Bytes` / `Result<u64, Error>` | donor | above plus `MemoTooLong` | `created` |
 | `pause_stream` | `stream_id: u64` / `Result<i128, Error>` | donor | `StreamNotFound`, `StreamAlreadyPaused`, `StreamCancelled` | `streampause`, `drained` when applicable |
@@ -71,12 +71,14 @@ abort the invocation.
 | `withdraw_all` | `ngo: Address, start: u32, limit: u32` / `Result<WithdrawAllPage, Error>` | NGO / payout authorizer | `NothingToWithdraw`, `ContractPaused`, `StreamNotFound` | `withdraw`, `drained` |
 | `cancel_stream` | `stream_id: u64` / `Result<i128, Error>` | donor | `StreamNotFound`, `StreamCancelled`, `ContractPaused` | `cancel` |
 | `rescue_stream` | `stream_id: u64` / `Result<i128, Error>` | admin, vault paused | `NotPaused`, `StreamNotFound`, `StreamCancelled`, `AdminRenounced` | `rescue` |
-| `top_up` | `stream_id: u64, amount: i128` / `Result<(), Error>` | donor | `InvalidAmount`, `StreamNotFound`, `StreamCancelled`, `ContractPaused`, `ArithmeticOverflow` | `topup` |
+| `top_up` | `stream_id: u64, amount: i128` / `Result<(), Error>` | donor | `InvalidAmount`, `StreamNotFound`, `StreamCancelled`, `ContractPaused`, `TokenDepositCapExceeded`, `ArithmeticOverflow` | `topup` |
 | `modify_rate` | `stream_id: u64, new_rate: i128` / `Result<(), Error>` | donor | `InvalidAmount`, `StreamNotFound`, `StreamCancelled`, `ContractPaused`, `RateTooHigh`, `StreamTooShort` | `ratemod` |
 | `transfer_stream` | `stream_id: u64, new_ngo: Address` / `Result<(), Error>` | donor | `StreamNotFound`, `StreamCancelled`, `ContractPaused`, `NgoNotVerified`, `InvalidNgo` | `transfer`, `drained` when applicable |
 | `upgrade_delay` | none / `u64` | none | — | — |
 | `pending_upgrade` | none / `Option<PendingUpgrade>` | none | — | — |
 | `committed_balance` | `token: Address` / `i128` | none | — | — |
+| `set_token_deposit_cap` | `token: Address, cap: Option<i128>` / `Result<(), Error>` | admin | `InvalidAmount`, `AdminRenounced` | `tokcap` |
+| `token_deposit_cap` | `token: Address` / `Option<i128>` | none | — | — |
 | `surplus` | `token: Address` / `i128` | none | — | — |
 | `set_upgrade_delay` | `delay: u64` / `Result<(), Error>` | admin | `AdminRenounced` | `updelay` |
 | `propose_upgrade` | `new_wasm_hash: BytesN<32>` / `Result<(), Error>` | admin | `AdminRenounced` | `uppropose` |
@@ -128,3 +130,13 @@ returns `NotRegistered`; boolean/list views return empty/false for absent data.
 
 For event topic and payload layouts, see [EVENTS.md](./EVENTS.md). For
 storage and TTL behavior, see [STORAGE.md](./STORAGE.md).
+
+### Per-token deposit cap
+
+An unset cap leaves the existing deposit rules in effect. An admin can set a
+nonnegative cap or remove it with `None`. Creating a stream and topping up
+are allowed at the cap exactly. A top-up is measured after settling its
+stream, using the gross amount that remains committed across all streams in
+that token. Lowering a cap leaves existing streams in place. Payouts and
+refunds can bring the token back below the cap. Configured caps use persistent
+storage; an archived cap must be restored and still applies after restoration.

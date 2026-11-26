@@ -144,6 +144,13 @@ pub struct TokenFeeBpsClearedEvent {
     pub data: (),
 }
 
+#[contractevent(topics = ["tokcap"], data_format = "single-value")]
+pub struct TokenDepositCapSetEvent {
+    #[topic]
+    pub token: Address,
+    pub cap: Option<i128>,
+}
+
 #[contractevent(topics = ["maxstrm"], data_format = "single-value")]
 pub struct MaxStreamsPerDonorSetEvent {
     pub limit: u64,
@@ -443,6 +450,8 @@ pub enum DataKey {
     /// `modify_rate` accept. Absent (or zero) means no minimum. See
     /// `set_min_duration` and issue #340.
     MinDuration,
+    /// Optional maximum total committed balance for a token.
+    TokenDepositCap(Address),
 }
 
 #[contracterror]
@@ -559,6 +568,8 @@ pub enum Error {
     /// A batch is all-or-nothing, so a single foreign stream rejects the
     /// whole call rather than cancelling the caller's streams around it.
     NotStreamOwner = 40,
+    /// A deposit would raise the token's committed balance above its cap.
+    TokenDepositCapExceeded = 41,
     // Error numbers are append-only: never renumber, reuse, or remove a
     // variant. New errors take the next unused number. See
     // docs/UPGRADE_POLICY.md.
@@ -714,6 +725,12 @@ fn set_committed(env: &Env, token: &Address, amount: i128) {
         .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 }
 
+fn get_token_deposit_cap(env: &Env, token: &Address) -> Option<i128> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TokenDepositCap(token.clone()))
+}
+
 /// Adjusts the committed balance for `token` by `delta`, which may be negative
 /// (a payout or refund leaving the vault). Checked so a broken invariant aborts
 /// rather than wrapping. See issue #346.
@@ -721,6 +738,9 @@ fn add_committed(env: &Env, token: &Address, delta: i128) -> Result<(), Error> {
     let next = get_committed(env, token)
         .checked_add(delta)
         .ok_or(Error::ArithmeticOverflow)?;
+    if delta > 0 && get_token_deposit_cap(env, token).is_some_and(|cap| next > cap) {
+        return Err(Error::TokenDepositCapExceeded);
+    }
     set_committed(env, token, next);
     Ok(())
 }
@@ -2349,6 +2369,33 @@ impl DonationVault {
     /// ```
     pub fn token_fee_bps(env: Env, token: Address) -> u32 {
         effective_fee_bps(&env, &token)
+    }
+
+    /// Sets or clears a token's maximum committed balance. Admin-gated.
+    ///
+    /// `None` removes the cap and `Some(0)` blocks new commitments. A
+    /// lower limit can be set while commitments exceed it; withdrawals and
+    /// refunds remain available.
+    pub fn set_token_deposit_cap(env: Env, token: Address, cap: Option<i128>) -> Result<(), Error> {
+        require_admin(&env)?;
+        let key = DataKey::TokenDepositCap(token.clone());
+        let storage = env.storage().persistent();
+        match cap {
+            Some(value) if value < 0 => return Err(Error::InvalidAmount),
+            Some(value) => {
+                storage.set(&key, &value);
+                storage.extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            }
+            None => storage.remove(&key),
+        }
+        extend_instance_ttl(&env);
+        TokenDepositCapSetEvent { token, cap }.publish(&env);
+        Ok(())
+    }
+
+    /// Returns the configured committed-balance cap for a token, if any.
+    pub fn token_deposit_cap(env: Env, token: Address) -> Option<i128> {
+        get_token_deposit_cap(&env, &token)
     }
 
     /// Returns the configured token allowlist for frontend token pickers.

@@ -49,6 +49,7 @@ for what works while the vault is paused, and the
 | `clear_treasury` | Admin | |
 | `set_fee_bps` | Admin | |
 | `set_token_fee_bps` | Admin | |
+| `set_token_deposit_cap` | Admin | |
 | `clear_token_fee_bps` | Admin | |
 | `set_min_deposit` | Admin | |
 | `set_cancel_grace_ledgers` | Admin | |
@@ -111,6 +112,7 @@ for what works while the vault is paused, and the
 | `upgrade_delay` | Anyone | View. |
 | `pending_upgrade` | Anyone | View. |
 | `committed_balance` | Anyone | View. |
+| `token_deposit_cap` | Anyone | View. |
 | `surplus` | Anyone | View. |
 
 <!-- roles:donation-vault:end -->

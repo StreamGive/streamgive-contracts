@@ -4808,6 +4808,119 @@ fn upgrade_allowed_once_timelock_disabled() {
 // =============================================================================
 
 #[test]
+fn token_deposit_cap_allows_exact_total_across_streams_and_is_token_specific() {
+    let s = setup();
+    let token = &s.token.address;
+    let (other_token, other_admin) = create_token(&s.env, &Address::generate(&s.env));
+    s.token_admin.mint(&s.donor, &1_500);
+    other_admin.mint(&s.donor, &1_500);
+
+    assert_eq!(s.client.token_deposit_cap(token), None);
+    s.client.set_token_deposit_cap(token, &Some(1_000));
+    s.client.create_stream(&s.donor, &s.ngo, token, &400, &10);
+    s.client.create_stream(&s.donor, &s.ngo, token, &600, &10);
+    assert_eq!(s.client.committed_balance(token), 1_000);
+    assert_eq!(
+        s.client.try_create_stream(&s.donor, &s.ngo, token, &1, &1),
+        Err(Ok(Error::TokenDepositCapExceeded))
+    );
+    assert_eq!(s.client.stream_count(), 2);
+    assert_eq!(s.token.balance(&s.donor), 500);
+
+    let other = &other_token.address;
+    assert_eq!(s.client.token_deposit_cap(other), None);
+    s.client.create_stream(&s.donor, &s.ngo, other, &1_500, &10);
+    assert_eq!(s.client.committed_balance(other), 1_500);
+}
+
+#[test]
+fn token_deposit_cap_can_be_lowered_below_existing_commitments() {
+    let s = setup();
+    let token = &s.token.address;
+    s.token_admin.mint(&s.donor, &2_000);
+    let id = s.client.create_stream(&s.donor, &s.ngo, token, &1_000, &10);
+    s.client.set_token_deposit_cap(token, &Some(400));
+
+    s.env.ledger().with_mut(|l| l.timestamp += 25);
+    let before = s.client.get_stream(&id);
+    assert_eq!(
+        s.client.try_top_up(&id, &10),
+        Err(Ok(Error::TokenDepositCapExceeded))
+    );
+    assert_eq!(s.client.get_stream(&id), before);
+    assert_eq!(s.client.committed_balance(token), 1_000);
+    assert_eq!(s.token.balance(&s.ngo), 0);
+
+    // Withdrawals remain possible even while the balance is above the cap.
+    assert_eq!(s.client.withdraw(&id), 250);
+    assert_eq!(s.client.committed_balance(token), 750);
+    s.env.ledger().with_mut(|l| l.timestamp += 40);
+    assert_eq!(s.client.withdraw(&id), 400);
+    s.client.top_up(&id, &50);
+    assert_eq!(s.client.committed_balance(token), 400);
+
+    // Settlement in the top-up also counts toward the resulting total.
+    s.env.ledger().with_mut(|l| l.timestamp += 10);
+    s.client.top_up(&id, &100);
+    assert_eq!(s.client.committed_balance(token), 400);
+    assert_eq!(s.client.cancel_stream(&id), 400);
+    assert_eq!(s.client.committed_balance(token), 0);
+}
+
+#[test]
+fn token_deposit_cap_still_applies_after_its_ttl_expires() {
+    let s = setup();
+    let token = &s.token.address;
+    s.token_admin.mint(&s.donor, &200);
+    s.client.set_token_deposit_cap(token, &Some(100));
+    s.client.create_stream(&s.donor, &s.ngo, token, &100, &10);
+    let cap_key = DataKey::TokenDepositCap(token.clone());
+    let cap_ttl = s.env.as_contract(&s.client.address, || {
+        s.env.storage().persistent().get_ttl(&cap_key)
+    });
+    s.env.ledger().with_mut(|l| l.sequence_number += cap_ttl + 1);
+
+    assert_eq!(
+        s.client.try_create_stream(&s.donor, &s.ngo, token, &1, &1),
+        Err(Ok(Error::TokenDepositCapExceeded))
+    );
+    assert_eq!(s.client.token_deposit_cap(token), Some(100));
+}
+
+#[test]
+fn token_deposit_cap_is_admin_gated_and_can_be_cleared() {
+    let s = setup();
+    let token = &s.token.address;
+    let admin = s.client.admin();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    assert_eq!(
+        s.client.try_set_token_deposit_cap(token, &Some(-1)),
+        Err(Ok(Error::InvalidAmount))
+    );
+    s.client.set_token_deposit_cap(token, &Some(0));
+    assert_auth_required_from(&s, &admin, "set_token_deposit_cap");
+    assert_last_event(
+        &s.env,
+        (symbol_short!("tokcap"), token.clone()),
+        Some(0i128),
+    );
+    assert_eq!(
+        s.client.try_create_stream(&s.donor, &s.ngo, token, &1, &1),
+        Err(Ok(Error::TokenDepositCapExceeded))
+    );
+
+    s.client.set_token_deposit_cap(token, &None);
+    assert_last_event(
+        &s.env,
+        (symbol_short!("tokcap"), token.clone()),
+        None::<i128>,
+    );
+    assert_eq!(s.client.token_deposit_cap(token), None);
+    s.client.create_stream(&s.donor, &s.ngo, token, &1_000, &10);
+}
+
+#[test]
 fn committed_balance_tracks_deposits_and_accrued_withdrawals() {
     let s = setup();
     s.token_admin.mint(&s.donor, &1_000);

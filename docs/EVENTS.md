@@ -18,7 +18,7 @@ layout stable. Event type names include `RegisterEvent`, `RenamedEvent`,
 `ApprovedEvent`, `RevokedEvent`, `UnregisteredEvent`, `RemovedEvent`,
 `ProposedAdminEvent`, `AcceptedAdminEvent`, `CancelledAdminEvent`,
 `PausedEvent`, `UnpausedEvent`, `RenouncedAdminEvent`, `TreasurySetEvent`, `TreasuryClearedEvent`,
-`FeeBpsSetEvent`, `TokenFeeBpsSetEvent`, `TokenFeeBpsClearedEvent`,
+`FeeBpsSetEvent`, `TokenFeeBpsSetEvent`, `TokenFeeBpsClearedEvent`, `TokenDepositCapSetEvent`,
 `MinDepositSetEvent`, `CancelGraceLedgersSetEvent`, `RegistrySetEvent`,
 `PayoutAddressSetEvent`, `MaxStreamsPerDonorSetEvent`, `MaxRateSetEvent`,
 `MaxRateClearedEvent`, `InitializedEvent`,
@@ -423,6 +423,15 @@ retention window applied to cancelled stream records.
 |---|---|
 | Topics | `("grceset",)` |
 | Data | `grace_ledgers: u32` (the new window, in ledgers) |
+
+### `tokcap`
+
+Emitted when an admin sets or clears the maximum committed balance for a token.
+
+| | |
+|---|---|
+| Topics | `("tokcap", token: Address)` |
+| Data | `cap: Option<i128>` (`None` is XDR void and removes the cap) |
 
 ### `maxrate`
 
