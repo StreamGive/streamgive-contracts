@@ -3984,6 +3984,102 @@ fn create_stream_with_memo_rejects_an_oversized_memo() {
     assert_eq!(s.token.balance(&s.donor), balance_before);
 }
 
+// Issue #452: memo size boundary tests
+// =============================================================================
+
+#[test]
+fn memo_empty_is_stored_and_emitted() {
+    // create_stream_with_memo with an explicitly empty Bytes records an empty
+    // memo on the stream and emits it in the created event.
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let empty = Bytes::new(&s.env);
+    let stream_id =
+        s.client
+            .create_stream_with_memo(&s.donor, &s.ngo, &s.token.address, &1_000, &10, &empty);
+    let created = last_event(&s.env);
+
+    assert_eq!(s.client.get_stream(&stream_id).memo, empty);
+    assert_eq!(
+        created,
+        (
+            (symbol_short!("created"), stream_id).into_val(&s.env),
+            (
+                s.donor.clone(),
+                s.ngo.clone(),
+                s.token.address.clone(),
+                1_000i128,
+                10i128,
+                empty,
+            )
+                .into_val(&s.env),
+        )
+    );
+}
+
+#[test]
+fn memo_exactly_32_bytes_is_stored_and_emitted() {
+    // MAX_MEMO_BYTES is the inclusive upper bound: a 32-byte memo must be
+    // accepted, stored on the stream, and echoed in the created event.
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let max_memo = Bytes::from_slice(&s.env, &[b'x'; MAX_MEMO_BYTES as usize]);
+    let stream_id = s.client.create_stream_with_memo(
+        &s.donor,
+        &s.ngo,
+        &s.token.address,
+        &1_000,
+        &10,
+        &max_memo,
+    );
+    let created = last_event(&s.env);
+
+    assert_eq!(s.client.get_stream(&stream_id).memo, max_memo);
+    assert_eq!(
+        created,
+        (
+            (symbol_short!("created"), stream_id).into_val(&s.env),
+            (
+                s.donor.clone(),
+                s.ngo.clone(),
+                s.token.address.clone(),
+                1_000i128,
+                10i128,
+                max_memo,
+            )
+                .into_val(&s.env),
+        )
+    );
+}
+
+#[test]
+fn memo_33_bytes_is_rejected_with_memo_too_long() {
+    // One byte past MAX_MEMO_BYTES must be rejected: no stream is created and
+    // the donor's deposit is not moved.
+    let s = setup();
+    s.token_admin.mint(&s.donor, &1_000);
+
+    let too_long = Bytes::from_slice(&s.env, &[b'x'; MAX_MEMO_BYTES as usize + 1]);
+    let balance_before = s.token.balance(&s.donor);
+
+    assert_eq!(
+        s.client.try_create_stream_with_memo(
+            &s.donor,
+            &s.ngo,
+            &s.token.address,
+            &1_000,
+            &10,
+            &too_long,
+        ),
+        Err(Ok(Error::MemoTooLong))
+    );
+    // No tokens left the donor's account.
+    assert_eq!(s.token.balance(&s.donor), balance_before);
+}
+
+// =============================================================================
 #[test]
 fn create_stream_rejects_self_stream() {
     let s = setup();
