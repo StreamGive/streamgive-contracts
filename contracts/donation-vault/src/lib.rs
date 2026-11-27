@@ -385,8 +385,14 @@ pub struct NgoRecord {
     pub name: String,
     /// Whether the NGO has been verified in the registry.
     pub verified: bool,
+    /// Optional link to the NGO's off-chain metadata.
     pub metadata_uri: Option<String>,
+    /// Ledger timestamp after which the verification lapses, if any.
     pub verified_until: Option<u64>,
+    /// Bit set of the NGO's category tags.
+    pub categories: u32,
+    /// The address an ownership transfer has been offered to, if any.
+    pub pending_owner: Option<Address>,
 }
 
 /// Thin cross-contract interface onto the configured ngo-registry contract.
@@ -3742,8 +3748,6 @@ impl DonationVault {
 
         let token_client = token::Client::new(&env, &stream.token);
         let payout = payout_destination(&env, &stream.ngo);
-        let fee = compute_fee(&env, &stream.token, accrued);
-        record_outflow_totals(&env, accrued, fee)?;
         let net = pay_ngo(&env, &token_client, &payout, accrued);
 
         WithdrawnEvent {
