@@ -93,6 +93,7 @@ for what works while the vault is paused, and the
 | `get_streams` | Anyone | View. |
 | `streams_by_donor` | Anyone | View. |
 | `donor_totals` | Anyone | View. |
+| `donor_stream_count` | Anyone | View. Counts every stream the donor has created, cancelled ones included. |
 | `streams_by_ngo` | Anyone | View. |
 | `active_streams_by_ngo` | Anyone | View. Pages only `Active` and `Paused` streams. |
 | `stream_count` | Anyone | View. |
@@ -101,7 +102,6 @@ for what works while the vault is paused, and the
 | `preview_stream` | Anyone | View. Estimates duration, token fee and validation errors before creation. |
 | `pending_payout` | Anyone | View. |
 | `pending_refund` | Anyone | View. |
-| `preview_stream` | Anyone | View. Estimates duration, token fee and validation errors before creation. |
 | `paused` | Anyone | View. |
 | `get_config` | Anyone | View. |
 | `treasury` | Anyone | View. |
