@@ -2838,4 +2838,4 @@ impl NgoRegistry {
 }
 
 #[cfg(test)]
-mod test;
+mod tests;

@@ -23,6 +23,9 @@ This project does not yet follow a formal versioning scheme — each contract's
 
 ### Changed
 
+- `ngo-registry`: split the 4,500-line `src/test.rs` into `src/tests/` modules for
+  registration, verification, admin and paging, with shared fixtures in
+  `tests/helpers.rs`. Same 244 tests; no behaviour change. See issue #395.
 - `donation-vault`: split `lib.rs` into `events.rs`, `types.rs`, and `storage.rs` modules. No behaviour change. See issue #393.
 
 ### Added

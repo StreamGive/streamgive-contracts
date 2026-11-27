@@ -41,7 +41,7 @@ published contract event.
 
 Contract tests live beside each contract in
 [`contracts/donation-vault/src/test.rs`](./contracts/donation-vault/src/test.rs)
-and [`contracts/ngo-registry/src/test.rs`](./contracts/ngo-registry/src/test.rs).
+and [`contracts/ngo-registry/src/tests/`](./contracts/ngo-registry/src/tests/).
 They run against Soroban's in-memory test environment; you do not need a
 network, wallet, or Stellar CLI to run them.
 
