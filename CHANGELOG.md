@@ -20,6 +20,10 @@ This project does not yet follow a formal versioning scheme — each contract's
   moves the name claims and any revocation to the new owner, and a duplicated
   `verified_count` decrement left in `delete_ngo_entry` is gone. Repairs the registry tests
   the same merges truncated, and adds the missing entry points to `docs/ROLES.md`.
+- `donation-vault`: make the test suite compile again. Restores the resume and
+  pause-accrual tests (issues #449, #450) that a merge interleaved, and removes the
+  unused `src/tests/` folder left by the split in #484 (it never compiled, and every
+  one of its tests also lives in `test.rs`). Test-only; no contract change.
 
 ### Changed
 
