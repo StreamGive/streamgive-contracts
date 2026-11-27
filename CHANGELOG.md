@@ -10,6 +10,17 @@ This project does not yet follow a formal versioning scheme — each contract's
 
 ## [Unreleased]
 
+### Fixed
+
+- `ngo-registry`: restore the build. Merges had dropped the definitions behind the
+  timelocked upgrade, owner transfer, category tags and unique names; they are back,
+  with the error codes that collided on 16 renumbered after `RegistrationsPaused`:
+  `NoPendingUpgrade` (17), `UpgradeDelayNotElapsed` (18), `UpgradeTimelockEnabled`
+  (19), `InvalidCategories` (20) and `NameTaken` (21). `accept_owner_transfer` now
+  moves the name claims and any revocation to the new owner, and a duplicated
+  `verified_count` decrement left in `delete_ngo_entry` is gone. Repairs the registry tests
+  the same merges truncated, and adds the missing entry points to `docs/ROLES.md`.
+
 ### Changed
 
 - `donation-vault`: split `lib.rs` into `events.rs`, `types.rs`, and `storage.rs` modules. No behaviour change. See issue #393.

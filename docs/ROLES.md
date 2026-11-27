@@ -156,6 +156,9 @@ for what works while the vault is paused, and the
 | `update_name` | NGO | The `owner` argument signs. Unverified entries only. |
 | `set_metadata_uri` | NGO | The `owner` argument signs. |
 | `set_categories` | NGO | The `owner` argument signs. Unverified entries only. |
+| `propose_owner_transfer` | NGO | The `current_owner` argument signs. Step 1 of an owner transfer. |
+| `cancel_owner_transfer` | NGO | The `owner` argument signs. |
+| `accept_owner_transfer` | Pending NGO owner | The `new_owner` argument signs. Step 2 of an owner transfer. |
 | `touch_ngo` | Anyone | TTL bump only. |
 | `admin` | Anyone | View. |
 | `pending_admin` | Anyone | View. |
@@ -173,5 +176,8 @@ for what works while the vault is paused, and the
 | `verified_count` | Anyone | View. |
 | `verify_period` | Anyone | View. |
 | `registrations_paused` | Anyone | View. |
+| `verification_status` | Anyone | View. |
+| `upgrade_delay` | Anyone | View. |
+| `pending_upgrade` | Anyone | View. |
 
 <!-- roles:ngo-registry:end -->
