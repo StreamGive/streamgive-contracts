@@ -10,8 +10,36 @@ This project does not yet follow a formal versioning scheme — each contract's
 
 ## [Unreleased]
 
+### Fixed
+
+- `ngo-registry`: restore the build. Merges had dropped the definitions behind the
+  timelocked upgrade, owner transfer, category tags and unique names; they are back,
+  with the error codes that collided on 16 renumbered after `RegistrationsPaused`:
+  `NoPendingUpgrade` (17), `UpgradeDelayNotElapsed` (18), `UpgradeTimelockEnabled`
+  (19), `InvalidCategories` (20) and `NameTaken` (21). `accept_owner_transfer` now
+  moves the name claims and any revocation to the new owner, and a duplicated
+  `verified_count` decrement left in `delete_ngo_entry` is gone. Repairs the registry tests
+  the same merges truncated, and adds the missing entry points to `docs/ROLES.md`.
+- `donation-vault`: make the test suite compile again. Restores the resume and
+  pause-accrual tests (issues #449, #450) that a merge interleaved, and removes the
+  unused `src/tests/` folder left by the split in #484 (it never compiled, and every
+  one of its tests also lives in `test.rs`).
+- `donation-vault`: NGO verification works again when a registry is configured. The
+  vault's copy of the registry's NGO record was missing the `categories` and
+  `pending_owner` fields, so every `get_ngo` reply failed to decode and each entry point
+  that verifies the NGO (`create_stream`, `top_up`, rate increases, `transfer_stream`,
+  `resume_stream`) failed.
+- `donation-vault`: `withdraw` no longer counts each payout twice in `total_withdrawn`
+  and `total_fees_collected`.
+- CI: raise the wasm size budgets to 104 KiB (`ngo_registry`) and 176 KiB
+  (`donation_vault`). Both contracts had grown past their limits while the build was
+  broken and the check never ran.
+
 ### Changed
 
+- `ngo-registry`: split the 4,500-line `src/test.rs` into `src/tests/` modules for
+  registration, verification, admin and paging, with shared fixtures in
+  `tests/helpers.rs`. Same 244 tests; no behaviour change. See issue #395.
 - `donation-vault`: split `lib.rs` into `events.rs`, `types.rs`, and `storage.rs` modules. No behaviour change. See issue #393.
 
 ### Added

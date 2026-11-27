@@ -21,7 +21,10 @@ WASM_DIR="$SCRIPT_DIR/../target/wasm32v1-none/release"
 
 # Max sizes (parallel arrays for Bash 3 compatibility)
 MAX_NAMES=("ngo_registry" "donation_vault")
-MAX_VALUES=(73728 147456)
+# Raised from 72 / 144 KiB once the build was restored: features merged while
+# CI could not reach this step had grown ngo_registry to 96966 bytes and
+# donation_vault to 164757 bytes (Rust 1.96.0). Each limit keeps ~8% headroom.
+MAX_VALUES=(106496 180224)
 
 status=0
 

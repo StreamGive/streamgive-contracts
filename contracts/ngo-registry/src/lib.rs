@@ -191,6 +191,76 @@ pub struct RegistrationsResumedEvent {
     pub data: (),
 }
 
+#[contractevent(topics = ["ownprop"], data_format = "vec")]
+pub struct OwnershipProposedEvent {
+    #[topic]
+    pub current_owner: Address,
+    pub new_owner: Address,
+}
+
+#[contractevent(topics = ["ownaccpt"], data_format = "vec")]
+pub struct OwnershipAcceptedEvent {
+    #[topic]
+    pub old_owner: Address,
+    pub new_owner: Address,
+}
+
+#[contractevent(topics = ["owncancel"], data_format = "single-value")]
+pub struct OwnershipCancelledEvent {
+    #[topic]
+    pub owner: Address,
+    pub data: (),
+}
+
+#[contractevent(topics = ["catset"], data_format = "single-value")]
+pub struct CategoriesSetEvent {
+    #[topic]
+    pub owner: Address,
+    /// The new bitmask value. Each set bit corresponds to one `CATEGORY_*`
+    /// constant; zero means no categories assigned.
+    pub categories: u32,
+}
+
+/// NGO category bitmask constants.
+///
+/// Each constant is a single bit. An NGO's `categories` field is the bitwise
+/// OR of whichever categories apply. Zero means uncategorised.
+///
+/// | Bit | Constant              | Meaning                             |
+/// |-----|-----------------------|-------------------------------------|
+/// | 0   | `CATEGORY_HEALTH`     | Healthcare and medical services     |
+/// | 1   | `CATEGORY_EDUCATION`  | Education and literacy              |
+/// | 2   | `CATEGORY_ENVIRONMENT`| Environment and climate             |
+/// | 3   | `CATEGORY_HUMANITAR`  | Humanitarian aid and disaster relief|
+/// | 4   | `CATEGORY_ANIMALS`    | Animal welfare                      |
+/// | 5   | `CATEGORY_ARTS`       | Arts, culture, and heritage         |
+/// | 6   | `CATEGORY_COMMUNITY`  | Community development               |
+/// | 7   | `CATEGORY_RESEARCH`   | Research and science                |
+///
+/// Bits 8–31 are reserved for future categories and must be zero in any value
+/// passed to `set_categories`; a non-zero reserved bit causes
+/// `Error::InvalidCategories`.
+pub const CATEGORY_HEALTH: u32 = 1 << 0;
+pub const CATEGORY_EDUCATION: u32 = 1 << 1;
+pub const CATEGORY_ENVIRONMENT: u32 = 1 << 2;
+pub const CATEGORY_HUMANITAR: u32 = 1 << 3;
+pub const CATEGORY_ANIMALS: u32 = 1 << 4;
+pub const CATEGORY_ARTS: u32 = 1 << 5;
+pub const CATEGORY_COMMUNITY: u32 = 1 << 6;
+pub const CATEGORY_RESEARCH: u32 = 1 << 7;
+
+/// The union of every defined category bit. Any bit set in a caller-supplied
+/// value that is *not* in this mask is a reserved bit and causes
+/// `Error::InvalidCategories`.
+pub const VALID_CATEGORY_MASK: u32 = CATEGORY_HEALTH
+    | CATEGORY_EDUCATION
+    | CATEGORY_ENVIRONMENT
+    | CATEGORY_HUMANITAR
+    | CATEGORY_ANIMALS
+    | CATEGORY_ARTS
+    | CATEGORY_COMMUNITY
+    | CATEGORY_RESEARCH;
+
 #[contracttype]
 // Debug and PartialEq let tests assert_eq! on a try_* callâ€™s full
 // Result<Result<Ngo, _>, _> rather than unwrapping it by hand first.
@@ -316,6 +386,18 @@ pub enum DataKey {
     /// `true` while `pause_registrations` is in effect; absent or `false`
     /// means registrations are open. See `pause_registrations` / `resume_registrations`.
     RegistrationsPaused,
+    /// Seconds that must elapse between `propose_upgrade` and
+    /// `execute_upgrade`. Zero (or absent) means the timelock is disabled and
+    /// the immediate `upgrade` entry point is allowed.
+    UpgradeDelay,
+    /// The upgrade recorded by `propose_upgrade` and not yet executed or
+    /// cancelled. Absent means no upgrade is pending.
+    PendingUpgrade,
+    /// Reverse index from a canonical name (ASCII-lowercased, whitespace-trimmed)
+    /// to the owner address that holds it. Set on `register`/`update_name`,
+    /// cleared on `unregister`/`remove_ngo`/`reject_ngo`. Used to enforce
+    /// name uniqueness across registrations.
+    NameOwner(Bytes),
 }
 
 #[contracterror]
@@ -362,6 +444,22 @@ pub enum Error {
     /// `register` was called while the admin has paused new registrations.
     /// Resume with `resume_registrations`.
     RegistrationsPaused = 16,
+    /// `execute_upgrade` or `cancel_upgrade` was called with no upgrade
+    /// proposed.
+    NoPendingUpgrade = 17,
+    /// `execute_upgrade` was called before the proposed upgrade's timelock
+    /// elapsed.
+    UpgradeDelayNotElapsed = 18,
+    /// The immediate `upgrade` entry point was called while a non-zero
+    /// `upgrade_delay` is configured: upgrades must go through
+    /// `propose_upgrade` / `execute_upgrade`.
+    UpgradeTimelockEnabled = 19,
+    /// `set_categories` was called with a bit set outside
+    /// `VALID_CATEGORY_MASK` (bits 8–31 are reserved).
+    InvalidCategories = 20,
+    /// The supplied name (after trimming whitespace and folding to lowercase)
+    /// is already in use by another registered NGO.
+    NameTaken = 21,
     // Error numbers are append-only: never renumber, reuse, or remove a
     // variant. New errors take the next unused number. See
     // docs/UPGRADE_POLICY.md.
@@ -431,10 +529,9 @@ fn extend_name_index_ttl(env: &Env, name: &String) {
 }
 
 /// Points `name` at `owner` in the name index, unless another owner already
-/// holds the name: the first claimant keeps it until it renames or leaves,
-/// and a later registrant with the same name is simply not indexed. (Names are
-/// not unique yet; this keeps the index from silently flipping between
-/// owners until they are.)
+/// holds the name: the first claimant keeps it until it renames or leaves.
+/// `register` and `update_name` reject a name that is already taken (see
+/// `Error::NameTaken`), so this guard only matters as a defence in depth.
 fn index_name(env: &Env, name: &String, owner: &Address) {
     let key = name_key(env, name);
     if !env.storage().persistent().has(&key) {
@@ -768,8 +865,10 @@ fn delete_ngo_entry(env: &Env, owner: &Address) -> Result<(), Error> {
         .unwrap_or(0);
     let new_ngo_count = count.checked_sub(1).ok_or(Error::ArithmeticOverflow)?;
 
-    // Keep `verified_count` and the name index in step with the entry being
-    // removed.
+    // Keep `verified_count` and the name indexes in step with the entry
+    // being removed, capturing the name so the uniqueness claim can be freed
+    // below.
+    let mut maybe_name: Option<String> = None;
     if let Some(ngo) = env
         .storage()
         .persistent()
@@ -781,23 +880,8 @@ fn delete_ngo_entry(env: &Env, owner: &Address) -> Result<(), Error> {
             let new_verified = verified.checked_sub(1).ok_or(Error::ArithmeticOverflow)?;
             set_verified_count(env, new_verified);
         }
+        maybe_name = Some(ngo.name);
     }
-    // Keep `verified_count` in step with the entry being removed, and
-    // capture the name before we delete the entry so we can free it below.
-    let maybe_name: Option<String> = env
-        .storage()
-        .persistent()
-        .get::<_, Ngo>(&DataKey::Ngo(owner.clone()))
-        .map(|ngo| {
-            if ngo.verified {
-                let verified = get_verified_count(env);
-                // Saturating sub rather than propagating an error here:
-                // underflow means the counter was already inconsistent,
-                // and removing the entry is still the right thing to do.
-                set_verified_count(env, verified.saturating_sub(1));
-            }
-            ngo.name
-        });
 
     env.storage()
         .persistent()
@@ -810,9 +894,7 @@ fn delete_ngo_entry(env: &Env, owner: &Address) -> Result<(), Error> {
     // Free the name so a future registrant can claim it.
     if let Some(name) = maybe_name {
         let key = canonical_name_key(env, &name);
-        env.storage()
-            .instance()
-            .remove(&DataKey::NameOwner(key));
+        env.storage().instance().remove(&DataKey::NameOwner(key));
     }
 
     // Remove from index using swap-and-pop to maintain a dense [0..count) index
@@ -2688,6 +2770,26 @@ impl NgoRegistry {
             extend_owner_index_ttl(&env, index, &new_owner);
         }
 
+        // Move the name claims to the new owner, so `owner_by_name` and the
+        // uniqueness check follow the entry and the new owner leaving frees
+        // the name.
+        unindex_name(&env, &ngo.name, &old_owner);
+        index_name(&env, &ngo.name, &new_owner);
+        let canonical = DataKey::NameOwner(canonical_name_key(&env, &ngo.name));
+        if env.storage().instance().get::<_, Address>(&canonical) == Some(old_owner.clone()) {
+            env.storage().instance().set(&canonical, &new_owner);
+        }
+
+        // Carry a revocation over, so `verification_status` still reports
+        // `Revoked` rather than `Pending` for the new owner.
+        let old_revoked = DataKey::NgoRevoked(old_owner.clone());
+        if env.storage().persistent().has(&old_revoked) {
+            env.storage().persistent().remove(&old_revoked);
+            env.storage()
+                .persistent()
+                .set(&DataKey::NgoRevoked(new_owner.clone()), &true);
+        }
+
         // Store the new entry
         env.storage().persistent().set(&new_key, &updated_ngo);
 
@@ -2736,5 +2838,4 @@ impl NgoRegistry {
 }
 
 #[cfg(test)]
-#[cfg(test)]
-mod test;
+mod tests;
