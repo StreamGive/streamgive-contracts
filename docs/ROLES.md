@@ -156,6 +156,10 @@ for what works while the vault is paused, and the
 | `update_name` | NGO | The `owner` argument signs. Unverified entries only. |
 | `set_metadata_uri` | NGO | The `owner` argument signs. |
 | `set_categories` | NGO | The `owner` argument signs. Unverified entries only. |
+| `set_country_code` | NGO | The `owner` argument signs. |
+| `propose_owner_transfer` | NGO | The `current_owner` argument signs. |
+| `accept_owner_transfer` | NGO | The `new_owner` argument signs. |
+| `cancel_owner_transfer` | NGO | The `owner` argument signs. |
 | `touch_ngo` | Anyone | TTL bump only. |
 | `admin` | Anyone | View. |
 | `pending_admin` | Anyone | View. |

@@ -21,6 +21,7 @@ This project does not yet follow a formal versioning scheme — each contract's
   stream is created. Shares its token/amount and configured-limit checks with
   `create_stream`, so the preview cannot drift (#438).
 - `ngo-registry`: `VerificationStatus` enum and `verification_status(owner)` view that distinguishes Unknown/Pending/Verified/Expired/Revoked. Closes #448.
+- `ngo-registry`: optional ISO 3166-1 alpha-2 `country_code` field on `Ngo`, settable by the owner via `set_country_code(owner, code)`. Validates that the code is exactly two ASCII uppercase letters; `None` clears it. Returned by `get_ngo`. Emits `cntrycode` event. Adds `Error::InvalidCountryCode` (code 22). Closes #445.
 
 ### Added
 

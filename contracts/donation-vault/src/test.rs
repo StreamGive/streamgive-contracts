@@ -6754,10 +6754,7 @@ fn get_config_snapshot_every_setter() {
     // Snapshot 12: After propose_admin
     let candidate = Address::generate(&s.env);
     s.client.propose_admin(&candidate);
-    assert_eq!(
-        s.client.get_config().pending_admin,
-        Some(candidate.clone())
-    );
+    assert_eq!(s.client.get_config().pending_admin, Some(candidate.clone()));
 
     // Snapshot 13: After cancel_admin_proposal
     s.client.cancel_admin_proposal();
@@ -6807,50 +6804,56 @@ fn withdraw_batch_is_atomic_on_token_transfer_failure() {
     // configured to fail on a specific transfer call. The Soroban SDK's
     // built-in token doesn't support this, so this test is marked as ignored
     // until proper mock infrastructure is available.
-    
+
     let s = setup();
     s.token_admin.mint(&s.donor, &3_000);
-    
+
     // Create 3 streams
-    let stream1 = s.client.create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
-    let stream2 = s.client.create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
-    let stream3 = s.client.create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
-    
+    let stream1 = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    let stream2 = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+    let stream3 = s
+        .client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10);
+
     // Let some time pass so all streams accrue
     s.env.ledger().with_mut(|l| l.timestamp += 50);
-    
+
     // Record state before batch withdrawal
     let stream1_before = s.client.get_stream(&stream1);
     let stream2_before = s.client.get_stream(&stream2);
     let stream3_before = s.client.get_stream(&stream3);
     let ngo_balance_before = s.token.balance(&s.ngo);
     let vault_balance_before = s.token.balance(&s.client.address);
-    
+
     // TODO: Replace with failing mock token
     // let failing_token = create_failing_token(&s.env, 2); // Fails on 2nd transfer
-    
+
     // Try to withdraw all 3 streams - should fail and revert
     let mut ids = Vec::new(&s.env);
     ids.push_back(stream1);
     ids.push_back(stream2);
     ids.push_back(stream3);
-    
+
     // TODO: This should fail when using failing token
     // let result = s.client.try_withdraw_batch(&ids);
     // assert!(result.is_err());
-    
+
     // Verify atomicity: NO streams should have changed
     let stream1_after = s.client.get_stream(&stream1);
     let stream2_after = s.client.get_stream(&stream2);
     let stream3_after = s.client.get_stream(&stream3);
-    
+
     assert_eq!(stream1_before.last_update, stream1_after.last_update);
     assert_eq!(stream1_before.withdrawn, stream1_after.withdrawn);
     assert_eq!(stream2_before.last_update, stream2_after.last_update);
     assert_eq!(stream2_before.withdrawn, stream2_after.withdrawn);
     assert_eq!(stream3_before.last_update, stream3_after.last_update);
     assert_eq!(stream3_before.withdrawn, stream3_after.withdrawn);
-    
+
     // Verify NO tokens were transferred
     assert_eq!(s.token.balance(&s.ngo), ngo_balance_before);
     assert_eq!(s.token.balance(&s.client.address), vault_balance_before);
@@ -6859,27 +6862,23 @@ fn withdraw_batch_is_atomic_on_token_transfer_failure() {
 #[test]
 fn withdraw_batch_at_max_size_stays_within_resource_budget() {
     let s = setup();
-    
+
     // Create exactly MAX_BATCH_WITHDRAW_STREAMS (20) streams
     let balance_per_stream: i128 = 1_000;
     let total_balance = balance_per_stream * MAX_BATCH_WITHDRAW_STREAMS as i128;
     s.token_admin.mint(&s.donor, &total_balance);
-    
+
     let mut stream_ids = Vec::new(&s.env);
     for _ in 0..MAX_BATCH_WITHDRAW_STREAMS {
-        let stream_id = s.client.create_stream(
-            &s.donor,
-            &s.ngo,
-            &s.token.address,
-            &balance_per_stream,
-            &10,
-        );
+        let stream_id =
+            s.client
+                .create_stream(&s.donor, &s.ngo, &s.token.address, &balance_per_stream, &10);
         stream_ids.push_back(stream_id);
     }
-    
+
     // Advance time so all streams have accrued funds
     s.env.ledger().with_mut(|l| l.timestamp += 50); // 500 per stream
-    
+
     // Reset and enforce budget for the withdraw_batch call
     // Soroban's default budget (without enforced limits):
     // - CPU instructions: 100M instructions
@@ -6894,20 +6893,20 @@ fn withdraw_batch_at_max_size_stays_within_resource_budget() {
     // 2. Network protocol changes have room to adjust limits
     // 3. Contract upgrades with minor logic additions stay safe
     s.env.budget().reset_unlimited();
-    
+
     // Execute the batch withdrawal with enforced budget
     let amounts = s.client.withdraw_batch(&stream_ids);
-    
+
     // Verify the operation succeeded
     assert_eq!(amounts.len(), MAX_BATCH_WITHDRAW_STREAMS as u32);
     for i in 0..MAX_BATCH_WITHDRAW_STREAMS {
         assert_eq!(amounts.get(i as u32), Some(500));
     }
-    
+
     // Check resource usage
     let cpu_insns = s.env.budget().cpu_instruction_cost();
     let mem_bytes = s.env.budget().memory_bytes_cost();
-    
+
     // Document current usage for future reference
     // If these assertions fail, it means withdraw_batch resource usage has increased
     // and MAX_BATCH_WITHDRAW_STREAMS may need to be reduced, or the implementation
@@ -6917,7 +6916,7 @@ fn withdraw_batch_at_max_size_stays_within_resource_budget() {
     const MAX_CPU_INSTRUCTIONS: u64 = 50_000_000;
     // Memory budget margin: 20MB (50% of 40MB default)
     const MAX_MEMORY_BYTES: u64 = 20_000_000;
-    
+
     assert!(
         cpu_insns < MAX_CPU_INSTRUCTIONS,
         "withdraw_batch CPU usage ({} instructions) exceeds safe margin ({} instructions). \
@@ -6925,7 +6924,7 @@ fn withdraw_batch_at_max_size_stays_within_resource_budget() {
         cpu_insns,
         MAX_CPU_INSTRUCTIONS
     );
-    
+
     assert!(
         mem_bytes < MAX_MEMORY_BYTES,
         "withdraw_batch memory usage ({} bytes) exceeds safe margin ({} bytes). \
@@ -6933,7 +6932,7 @@ fn withdraw_batch_at_max_size_stays_within_resource_budget() {
         mem_bytes,
         MAX_MEMORY_BYTES
     );
-    
+
     // Log actual usage for visibility in test output
     println!(
         "withdraw_batch resource usage for {} streams: CPU={} instructions, Memory={} bytes",
@@ -8922,6 +8921,11 @@ fn streams_by_donor_handles_default_cap() {
 
 /// A fresh 1_000-deposit, 10/s stream created at ledger time 0.
 fn resume_fixture(s: &Setup<'_>) -> u64 {
+    s.token_admin.mint(&s.donor, &1_000);
+    s.client
+        .create_stream(&s.donor, &s.ngo, &s.token.address, &1_000, &10)
+}
+
 // =============================================================================
 // Accrual stops while a stream is paused (issue #450)
 // =============================================================================
@@ -9051,6 +9055,27 @@ fn resume_stream_with_a_future_start_keeps_the_cliff() {
     s.token_admin.mint(&s.donor, &1_000);
     s.env.ledger().with_mut(|l| l.timestamp = 1_000);
     let start = 2_000;
+    let stream_id =
+        s.client
+            .create_stream_with_start(&s.donor, &s.ngo, &s.token.address, &1_000, &10, &start);
+
+    // Pause before the cliff: settle accrues nothing (stream hasn't started).
+    assert_eq!(s.client.pause_stream(&stream_id), 0);
+    assert_eq!(s.client.get_stream(&stream_id).status, StreamStatus::Paused);
+
+    // Resume the paused stream.
+    s.client.resume_stream(&stream_id);
+
+    // The start (cliff) must be preserved; last_update moves to now (1_000).
+    let stream = s.client.get_stream(&stream_id);
+    assert_eq!(stream.status, StreamStatus::Active);
+    assert_eq!(stream.start, start);
+    assert_eq!(stream.last_update, 1_000);
+    // No time has passed since the stream started, so nothing is payable yet.
+    assert_eq!(s.client.pending_accrual(&stream_id), 0);
+}
+
+#[test]
 fn payable_amount_before_during_and_after_a_pause() {
     let s = setup();
     let stream_id = paused_test_stream(&s);

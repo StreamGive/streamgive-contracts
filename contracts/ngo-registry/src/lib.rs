@@ -191,6 +191,51 @@ pub struct RegistrationsResumedEvent {
     pub data: (),
 }
 
+/// Event emitted when an NGO's category bitmask is changed.
+#[contractevent(topics = ["categories"], data_format = "single-value")]
+#[allow(missing_docs)]
+pub struct CategoriesSetEvent {
+    #[topic]
+    pub owner: Address,
+    pub categories: u32,
+}
+
+/// Event emitted when an NGO ownership transfer is proposed.
+#[contractevent(topics = ["ownprop"], data_format = "single-value")]
+#[allow(missing_docs)]
+pub struct OwnershipProposedEvent {
+    #[topic]
+    pub current_owner: Address,
+    pub new_owner: Address,
+}
+
+/// Event emitted when an NGO ownership transfer is accepted.
+#[contractevent(topics = ["ownaccpt"], data_format = "single-value")]
+#[allow(missing_docs)]
+pub struct OwnershipAcceptedEvent {
+    #[topic]
+    pub old_owner: Address,
+    pub new_owner: Address,
+}
+
+/// Event emitted when an NGO ownership transfer is cancelled.
+#[contractevent(topics = ["owncancel"], data_format = "single-value")]
+#[allow(missing_docs)]
+pub struct OwnershipCancelledEvent {
+    #[topic]
+    pub owner: Address,
+    pub data: (),
+}
+
+/// Event emitted when an NGO's country code is set or cleared.
+#[contractevent(topics = ["cntrycode"], data_format = "single-value")]
+#[allow(missing_docs)]
+pub struct CountryCodeSetEvent {
+    #[topic]
+    pub owner: Address,
+    pub country_code: Option<String>,
+}
+
 #[contracttype]
 // Debug and PartialEq let tests assert_eq! on a try_* callâ€™s full
 // Result<Result<Ngo, _>, _> rather than unwrapping it by hand first.
@@ -224,6 +269,11 @@ pub struct Ngo {
     /// cleared by `accept_owner_transfer` or `cancel_owner_transfer`. `None` means
     /// no ownership transfer is pending.
     pub pending_owner: Option<Address>,
+    /// Optional ISO 3166-1 alpha-2 country code set by the owner, indicating
+    /// the primary country where the NGO operates. Must be exactly two ASCII
+    /// uppercase letters (e.g. `"NG"` for Nigeria). `None` until the owner
+    /// calls `set_country_code`. See issue #445.
+    pub country_code: Option<String>,
 }
 
 /// The verification state of an NGO owner address, returned by `verification_status`.
@@ -316,6 +366,13 @@ pub enum DataKey {
     /// `true` while `pause_registrations` is in effect; absent or `false`
     /// means registrations are open. See `pause_registrations` / `resume_registrations`.
     RegistrationsPaused,
+    /// Canonical-form name uniqueness index: maps `Bytes` (lowercase-trimmed name)
+    /// to the owner `Address` that holds it.
+    NameOwner(Bytes),
+    /// The upgrade timelock delay, in seconds.
+    UpgradeDelay,
+    /// A pending timelocked upgrade proposal.
+    PendingUpgrade,
 }
 
 #[contracterror]
@@ -362,6 +419,19 @@ pub enum Error {
     /// `register` was called while the admin has paused new registrations.
     /// Resume with `resume_registrations`.
     RegistrationsPaused = 16,
+    /// A name is already claimed by another owner.
+    NameTaken = 17,
+    /// `set_categories` was called with reserved bits set.
+    InvalidCategories = 18,
+    /// `upgrade` was called while a non-zero upgrade delay is configured.
+    UpgradeTimelockEnabled = 19,
+    /// `execute_upgrade` or `cancel_upgrade` was called with no pending proposal.
+    NoPendingUpgrade = 20,
+    /// `execute_upgrade` was called before the timelock elapsed.
+    UpgradeDelayNotElapsed = 21,
+    /// The supplied country code is not a valid ISO 3166-1 alpha-2 code
+    /// (must be exactly two ASCII uppercase letters, e.g. "NG").
+    InvalidCountryCode = 22,
     // Error numbers are append-only: never renumber, reuse, or remove a
     // variant. New errors take the next unused number. See
     // docs/UPGRADE_POLICY.md.
@@ -383,6 +453,33 @@ pub const MAX_METADATA_URI_LEN: u32 = 512;
 /// a single page. Caps read footprint, memory, and gas consumption to keep
 /// pagination bounded.
 pub const MAX_LIST_LIMIT: u32 = 50;
+
+/// Category constant: Health.
+pub const CATEGORY_HEALTH: u32 = 1 << 0;
+/// Category constant: Education.
+pub const CATEGORY_EDUCATION: u32 = 1 << 1;
+/// Category constant: Environment.
+pub const CATEGORY_ENVIRONMENT: u32 = 1 << 2;
+/// Category constant: Humanitarian Aid.
+pub const CATEGORY_HUMANITARIAN: u32 = 1 << 3;
+/// Category constant: Animal Welfare.
+pub const CATEGORY_ANIMAL_WELFARE: u32 = 1 << 4;
+/// Category constant: Arts & Culture.
+pub const CATEGORY_ARTS: u32 = 1 << 5;
+/// Category constant: Community Development.
+pub const CATEGORY_COMMUNITY: u32 = 1 << 6;
+/// Category constant: Research & Science.
+pub const CATEGORY_RESEARCH: u32 = 1 << 7;
+/// Bitmask of all defined category bits (bits 0–7). Bits 8–31 are reserved.
+pub const VALID_CATEGORY_MASK: u32 = 0x0000_00FF;
+
+// Re-export DAY_IN_LEDGERS so tests that do `use super::*` can reference it.
+pub use common::DAY_IN_LEDGERS;
+
+/// Alias used in tests: Humanitarian Aid category.
+pub const CATEGORY_HUMANITAR: u32 = CATEGORY_HUMANITARIAN;
+/// Alias used in tests: Animal Welfare category.
+pub const CATEGORY_ANIMALS: u32 = CATEGORY_ANIMAL_WELFARE;
 
 /// NGO-specific bump and threshold amounts, using the 90-day persistent entry constants.
 const NGO_BUMP_AMOUNT: u32 = PERSISTENT_BUMP_AMOUNT;
@@ -637,6 +734,25 @@ fn validate_metadata_uri(uri: &Option<String>) -> Result<(), Error> {
     Ok(())
 }
 
+/// Validates an optional ISO 3166-1 alpha-2 country code.
+///
+/// `None` is always allowed. `Some` must be exactly two ASCII uppercase
+/// letters (A–Z). Returns `Error::InvalidCountryCode` otherwise.
+fn validate_country_code(code: &Option<String>) -> Result<(), Error> {
+    if let Some(c) = code {
+        if c.len() != 2 {
+            return Err(Error::InvalidCountryCode);
+        }
+        let mut buf = [0u8; 2];
+        let bytes: Bytes = c.into();
+        bytes.copy_into_slice(&mut buf);
+        if !buf[0].is_ascii_uppercase() || !buf[1].is_ascii_uppercase() {
+            return Err(Error::InvalidCountryCode);
+        }
+    }
+    Ok(())
+}
+
 /// Reads the configured admin and requires their auth, failing with
 /// `Error::NotInitialized` if `init` hasn't been called yet. Shared by
 /// every admin-gated entry point so the same three steps aren't repeated
@@ -810,9 +926,7 @@ fn delete_ngo_entry(env: &Env, owner: &Address) -> Result<(), Error> {
     // Free the name so a future registrant can claim it.
     if let Some(name) = maybe_name {
         let key = canonical_name_key(env, &name);
-        env.storage()
-            .instance()
-            .remove(&DataKey::NameOwner(key));
+        env.storage().instance().remove(&DataKey::NameOwner(key));
     }
 
     // Remove from index using swap-and-pop to maintain a dense [0..count) index
@@ -1229,6 +1343,7 @@ impl NgoRegistry {
             verified_until: None,
             categories: 0,
             pending_owner: None,
+            country_code: None,
         };
         env.storage().persistent().set(&key, &ngo);
 
@@ -2665,6 +2780,7 @@ impl NgoRegistry {
             verified_until: ngo.verified_until,
             categories: ngo.categories,
             pending_owner: None,
+            country_code: ngo.country_code.clone(),
         };
 
         // Remove the old entry
@@ -2730,6 +2846,66 @@ impl NgoRegistry {
         extend_ngo_ttl(&env, &owner);
 
         OwnershipCancelledEvent { owner, data: () }.publish(&env);
+
+        Ok(())
+    }
+
+    /// Sets or clears the ISO 3166-1 alpha-2 country code for the caller's own
+    /// NGO entry. The code must be exactly two ASCII uppercase letters
+    /// (e.g. `"NG"` for Nigeria), or `None` to clear it. Requires the owner's
+    /// auth; the entry must already be registered. Emits a `cntrycode` event
+    /// only when the value actually changes. See issue #445.
+    ///
+    /// # Errors
+    ///
+    /// - `Error::NotRegistered` — no entry exists for `owner`.
+    /// - `Error::InvalidCountryCode` — `code` is `Some` but not exactly two
+    ///   ASCII uppercase letters.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    /// # use ngo_registry::{NgoRegistry, NgoRegistryArgs, NgoRegistryClient};
+    /// # let env = Env::default();
+    /// # env.mock_all_auths();
+    /// # let admin = Address::generate(&env);
+    /// # let contract_id = env.register(NgoRegistry, NgoRegistryArgs::__constructor(&admin));
+    /// # let client = NgoRegistryClient::new(&env, &contract_id);
+    /// # let owner = Address::generate(&env);
+    /// # client.register(&owner, &String::from_str(&env, "Example NGO"));
+    /// let code = Some(String::from_str(&env, "NG"));
+    /// client.set_country_code(&owner, &code);
+    /// assert_eq!(client.get_ngo(&owner).country_code, code);
+    ///
+    /// // Clear it again.
+    /// client.set_country_code(&owner, &None);
+    /// assert_eq!(client.get_ngo(&owner).country_code, None);
+    /// ```
+    pub fn set_country_code(env: Env, owner: Address, code: Option<String>) -> Result<(), Error> {
+        owner.require_auth();
+
+        validate_country_code(&code)?;
+
+        let key = DataKey::Ngo(owner.clone());
+        let mut ngo: Ngo = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotRegistered)?;
+
+        if ngo.country_code != code {
+            ngo.country_code = code.clone();
+            env.storage().persistent().set(&key, &ngo);
+            extend_instance_ttl(&env);
+            extend_ngo_ttl(&env, &owner);
+
+            CountryCodeSetEvent {
+                owner,
+                country_code: code,
+            }
+            .publish(&env);
+        }
 
         Ok(())
     }
