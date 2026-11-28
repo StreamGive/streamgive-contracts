@@ -638,6 +638,7 @@ dependencies = [
  "ngo-registry",
  "proptest",
  "soroban-sdk",
+ "streamgive-types",
 ]
 
 [[package]]
@@ -1197,6 +1198,7 @@ version = "0.1.0"
 dependencies = [
  "common",
  "soroban-sdk",
+ "streamgive-types",
 ]
 
 [[package]]
@@ -1971,6 +1973,13 @@ dependencies = [
  "serde_with",
  "sha2",
  "stellar-strkey 0.0.13",
+]
+
+[[package]]
+name = "streamgive-types"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]

@@ -8,9 +8,12 @@
 #![no_std]
 #![allow(missing_docs)]
 use soroban_sdk::{
+use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
     symbol_short, token, Address, Bytes, BytesN, Env, IntoVal, Map, String, Vec,
 };
+};
+use streamgive_types::Ngo;
 
 use common::{
     INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
@@ -371,11 +374,18 @@ pub struct PendingUpgrade {
 
 mod math;
 
-/// Mirrors ngo-registry's `Ngo` record for cross-contract calls. Declared
-/// locally rather than imported from the `ngo-registry` crate: depending on
-/// its source directly would pull that crate's own `#[contractimpl]` exports
-/// into this contract's Wasm link unit, colliding with this contract's
-/// identically-named entry points (`admin`, `init`, `upgrade`, ...).
+/// Thin cross-contract interface onto the configured ngo-registry contract.
+/// Uses the locally defined NgoRecord to avoid importing ngo-registry's
+/// contract implementation and causing Wasm entry-point collisions.
+#[contractclient(name = "NgoRegistryClient")]
+#[allow(dead_code)]
+trait NgoRegistryInterface {
+    fn get_ngo(env: Env, owner: Address) -> NgoRecord;
+}
+
+/// Mirrors ngo-registry's `Ngo` record for cross-contract calls.
+/// Declared locally to avoid pulling the registry's contract exports
+/// into this contract's Wasm link unit.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct NgoRecord {
@@ -397,6 +407,7 @@ pub struct NgoRecord {
 trait NgoRegistryInterface {
     fn get_ngo(env: Env, owner: Address) -> NgoRecord;
     fn ngo_count(env: Env) -> u64;
+}
 }
 
 /// A single donor -> NGO streaming donation.
@@ -3393,16 +3404,18 @@ impl DonationVault {
         deposit: i128,
         rate: i128,
     ) -> Result<u64, Error> {
-        create_stream_inner(
-            env.clone(),
-            donor,
-            ngo,
-            token,
-            deposit,
-            rate,
-            None,
-            Bytes::new(&env),
-        )
+let memo = Bytes::new(&env);
+
+create_stream_inner(
+    env,
+    donor,
+    ngo,
+    token,
+    deposit,
+    rate,
+    None,
+    memo,
+)
     }
 
     /// Creates a stream with a cliff: it stays idle until `start`, so nothing
@@ -3461,16 +3474,18 @@ impl DonationVault {
         rate: i128,
         start: u64,
     ) -> Result<u64, Error> {
-        create_stream_inner(
-            env.clone(),
-            donor,
-            ngo,
-            token,
-            deposit,
-            rate,
-            Some(start),
-            Bytes::new(&env),
-        )
+let memo = Bytes::new(&env);
+
+create_stream_inner(
+    env,
+    donor,
+    ngo,
+    token,
+    deposit,
+    rate,
+    Some(start),
+    memo,
+)
     }
 
     /// Creates a stream that begins accruing immediately, tagged with an

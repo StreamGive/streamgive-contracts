@@ -10,6 +10,7 @@ use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
     Env, String, Vec,
 };
+pub use streamgive_types::Ngo;
 
 use common::{
     INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
@@ -251,8 +252,6 @@ pub struct RegistrationsResumedEvent {
 }
 
 #[contracttype]
-// Debug and PartialEq let tests assert_eq! on a try_* callâ€™s full
-// Result<Result<Ngo, _>, _> rather than unwrapping it by hand first.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ngo {
     /// The address that registered and owns this NGO entry.
@@ -261,28 +260,20 @@ pub struct Ngo {
     pub name: String,
     /// Whether an admin or approver has approved this entry.
     pub verified: bool,
-    /// Optional owner-supplied reference to off-chain metadata (a website,
-    /// description, or logo), so an entry can be linked to what the NGO
-    /// publishes about itself. `None` until the owner calls
-    /// `set_metadata_uri`. Bounded by `MAX_METADATA_URI_LEN`. See issue #347.
+    /// Optional owner-supplied reference to off-chain metadata.
     pub metadata_uri: Option<String>,
-    /// Optional ledger timestamp at which this verification lapses. Set by
-    /// `approve_ngo` / `batch_approve` from the configured verification period
-    /// (see `set_verify_period`), and moved forward by `renew_ngo`. `None` means
-    /// the verification never expires. Once the current ledger timestamp
-    /// reaches it the entry is treated as unverified by `is_verified` and
-    /// `get_ngo`, until an admin renews it. See issue #348.
+    /// Optional ledger timestamp at which verification lapses.
     pub verified_until: Option<u64>,
-    /// Bitmask of category tags chosen by the owner, expressed as the bitwise
-    /// OR of `CATEGORY_*` constants. `0` means uncategorised. Set via
-    /// `set_categories`; locked once the NGO is verified (the owner must
-    /// request revocation to change it after approval). Readable via
-    /// `categories()` or `get_ngo()`.
-    pub categories: u32,
-    /// Optional pending new owner address. Set by `propose_owner_transfer` and
-    /// cleared by `accept_owner_transfer` or `cancel_owner_transfer`. `None` means
-    /// no ownership transfer is pending.
-    pub pending_owner: Option<Address>,
+/// OR of `CATEGORY_*` constants. `0` means uncategorised. Set via
+/// `set_categories`; locked once the NGO is verified (the owner must
+/// request revocation to change it after approval). Readable via
+/// `categories()` or `get_ngo()`.
+pub categories: u32,
+
+/// Optional pending new owner address. Set by `propose_owner_transfer` and
+/// cleared by `accept_owner_transfer` or `cancel_owner_transfer`. `None` means
+/// no ownership transfer is pending.
+pub pending_owner: Option<Address>,
 }
 
 /// The verification state of an NGO owner address, returned by `verification_status`.

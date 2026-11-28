@@ -49,8 +49,8 @@ fn assert_last_event<T: IntoVal<Env, Val>, D: IntoVal<Env, Val>>(env: &Env, topi
 /// last one (issue #344).
 fn count_events_with_topic(env: &Env, topic0: Symbol) -> u32 {
     let all = env.events().all();
-    let topic0: Val = topic0.into_val(env);
-    let expected = ScVal::try_from_val(env, &topic0).unwrap();
+let topic0: Val = topic0.into_val(env);
+let expected = ScVal::try_from_val(env, &topic0).unwrap();
     all.events()
         .iter()
         .filter(|event| {
@@ -9187,6 +9187,45 @@ fn a_cliff_stream_paused_before_its_start_accrues_from_the_resume_time() {
     s.env.ledger().with_mut(|l| l.timestamp = 2_050);
     assert_eq!(s.client.pending_accrual(&stream_id), 500);
 }
+#[test]
+fn fee_plus_net_equals_accrued(
+    rate in 1i128..=1_000_000i128,
+    elapsed in 1u64..=86_400u64,
+    balance in 1_000i128..=1_000_000_000i128,
+    fee_bps in 0u32..=1_000u32,
+) {
+    let s = setup();
+    s.token_admin.mint(&s.donor, &balance);
+
+    let treasury = Address::generate(&s.env);
+    s.client.set_treasury(&treasury);
+    s.client.set_fee_bps(&fee_bps);
+
+    let stream_id = s.client.create_stream(
+        &s.donor,
+        &s.ngo,
+        &s.token.address,
+        &balance,
+        &rate,
+    );
+
+    s.env.ledger().with_mut(|l| l.timestamp += elapsed);
+
+    let accrued = s.client.pending_accrual(&stream_id);
+    let net = s.client.withdraw(&stream_id);
+    let fee_balance = s.token.balance(&treasury);
+
+    prop_assert_eq!(fee_balance + net, accrued);
+    prop_assert!(fee_balance >= 0);
+    prop_assert!(net >= 0);
+    prop_assert!(accrued >= 0);
+    prop_assert!(net <= accrued);
+}
+}
+
+// =============================================================================
+// Tests for accrual after very long elapsed times (Issue 2)
+// =============================================================================
 
 #[test]
 fn resume_stream_requires_the_donors_auth() {
@@ -9244,14 +9283,19 @@ mod proptest_committed_balance {
     use proptest::prelude::*;
     use proptest::test_runner::TestCaseResult;
 
-    #[derive(Debug, Clone)]
-    enum Action {
-        Create { deposit: i128, rate: i128 },
-        TopUp { slot: usize, amount: i128 },
-        Withdraw { slot: usize },
-        Cancel { slot: usize },
-        Transfer { slot: usize },
-    }
+let rate = i128::MAX / 2;
+let stream_id = s
+    .client
+    .create_stream(&s.donor, &s.ngo, &s.token.address, &balance, &rate);
+
+#[derive(Debug, Clone)]
+enum Action {
+    Create { deposit: i128, rate: i128 },
+    TopUp { slot: usize, amount: i128 },
+    Withdraw { slot: usize },
+    Cancel { slot: usize },
+    Transfer { slot: usize },
+}
 
     #[derive(Debug, Clone)]
     struct Step {

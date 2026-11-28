@@ -12,8 +12,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = "27.0.6"
+streamgive-types = { path = "../streamgive-types" }
 common = { workspace = true }
-
 [dev-dependencies]
 soroban-sdk = { version = "27.0.6", features = ["testutils"] }
 proptest = "1.11.0"
