@@ -7,6 +7,7 @@ testing, deployment, pausing, and error codes, see the
 | Document | What it covers |
 | --- | --- |
 | [DONORS.md](./DONORS.md) | A plain-language guide for donors: creating, topping up, pausing, and cancelling a stream, the fees involved, and what can go wrong. |
+| [NGOS.md](./NGOS.md) | A plain-language guide for NGOs: registering, getting and keeping verified, receiving and withdrawing funds, setting a payout address, and what changes if verification is revoked. |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | How the contracts, backend, and frontend fit together, how a donation flows end to end, and which tokens the vault supports. |
 | [STREAM_LIFECYCLE.md](./STREAM_LIFECYCLE.md) | The life of a stream from creation to cancellation, with sequence diagrams for each fork and how to convert a monthly amount into a per-second rate. |
 | [ROLES.md](./ROLES.md) | Every public entry point of both contracts and the role (admin, approver, donor, NGO, anyone) it requires. |
@@ -21,5 +22,6 @@ testing, deployment, pausing, and error codes, see the
 | [THREAT_MODEL.md](./THREAT_MODEL.md) | What the contracts protect, who they defend against, what the admin can and cannot do, and which risks are accepted. |
 | [UPGRADE_POLICY.md](./UPGRADE_POLICY.md) | What integrators can rely on between releases: append-only error codes and the rules for storage-layout changes. |
 | [MAINNET_CHECKLIST.md](./MAINNET_CHECKLIST.md) | Pre-launch sign-offs for audit status, admin custody, fees, treasury, registry, pause readiness, monitoring, deployment, and post-deploy verification. |
+| [adr/](./adr/README.md) | Architecture decision records: why the contracts are built the way they are (lazy accrual, checked arithmetic, the registry check, TTL policy), with a template for new records. |
 
 When you add a document to this folder, add a row here in the same PR.

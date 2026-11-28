@@ -6,6 +6,7 @@
     "stellar",
     "wasm",
     "ngo",
+    "ngos",
     "StreamGive",
     "clippy",
     "rustfmt",
