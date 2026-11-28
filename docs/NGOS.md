@@ -55,7 +55,7 @@ After `register` you can update your own entry:
 | --- | --- | --- |
 | Display name | `update_name(owner, name)` | Same rules as `register`. Locked once you are verified. |
 | Public profile URI | `set_metadata_uri(owner, uri)` | A link to a page or JSON describing your work, at most 512 bytes. Pass nothing to clear it. |
-| Categories | `set_categories(owner, categories)` | A `u32` bitmask of category flags; `0` clears them. Reserved bits are rejected. Locked once you are verified. |
+| Categories | `set_categories(owner, categories)` | A `u32` made of category bit flags; `0` clears them. Reserved bits are rejected. Locked once you are verified. |
 
 If you change your mind entirely you can `unregister(owner)`. Like category
 changes, that only works while you are unverified: once you are approved, an
