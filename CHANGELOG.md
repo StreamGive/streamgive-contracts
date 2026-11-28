@@ -12,6 +12,9 @@ This project does not yet follow a formal versioning scheme — each contract's
 
 ### Changed
 
+- `donation-vault`, `ngo-registry`: internal typed storage helpers that centralize
+  persistent reads/writes and TTL bumps for streams and NGO entries. No
+  behavior change. See issue #398.
 - `donation-vault`: split `lib.rs` into `events.rs`, `types.rs`, and `storage.rs` modules. No behaviour change. See issue #393.
 
 ### Added
