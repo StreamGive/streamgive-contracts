@@ -181,6 +181,65 @@ pub struct VerifyPeriodSetEvent {
     pub verify_period: u64,
 }
 
+/// Event emitted when an NGO's category bitmask is set.
+#[contractevent(topics = ["catset"], data_format = "single-value")]
+pub struct CategoriesSetEvent {
+    #[topic]
+    pub owner: Address,
+    /// The new bitmask value. Each set bit corresponds to one `CATEGORY_*`
+    /// constant; zero means no categories assigned.
+    pub categories: u32,
+}
+
+/// Event emitted when an NGO owner proposes an ownership transfer.
+#[contractevent(topics = ["ownprop"], data_format = "vec")]
+pub struct OwnershipProposedEvent {
+    #[topic]
+    pub current_owner: Address,
+    pub new_owner: Address,
+}
+
+/// Event emitted when a proposed NGO ownership transfer is accepted.
+#[contractevent(topics = ["ownaccpt"], data_format = "vec")]
+pub struct OwnershipAcceptedEvent {
+    #[topic]
+    pub old_owner: Address,
+    pub new_owner: Address,
+}
+
+/// Event emitted when a proposed NGO ownership transfer is cancelled.
+#[contractevent(topics = ["owncancel"], data_format = "single-value")]
+pub struct OwnershipCancelledEvent {
+    #[topic]
+    pub owner: Address,
+    pub data: (),
+}
+
+/// NGO category bitmask constants.
+///
+/// Each constant is a single bit. An NGO's `categories` field is the bitwise
+/// OR of whichever categories apply. Zero means uncategorised.
+pub const CATEGORY_HEALTH: u32 = 1 << 0;
+pub const CATEGORY_EDUCATION: u32 = 1 << 1;
+pub const CATEGORY_ENVIRONMENT: u32 = 1 << 2;
+pub const CATEGORY_HUMANITAR: u32 = 1 << 3;
+pub const CATEGORY_ANIMALS: u32 = 1 << 4;
+pub const CATEGORY_ARTS: u32 = 1 << 5;
+pub const CATEGORY_COMMUNITY: u32 = 1 << 6;
+pub const CATEGORY_RESEARCH: u32 = 1 << 7;
+
+/// The union of every defined category bit. Any bit set in a caller-supplied
+/// value that is *not* in this mask is a reserved bit and causes
+/// `Error::InvalidCategories`.
+pub const VALID_CATEGORY_MASK: u32 = CATEGORY_HEALTH
+    | CATEGORY_EDUCATION
+    | CATEGORY_ENVIRONMENT
+    | CATEGORY_HUMANITAR
+    | CATEGORY_ANIMALS
+    | CATEGORY_ARTS
+    | CATEGORY_COMMUNITY
+    | CATEGORY_RESEARCH;
+
 #[contractevent(topics = ["regrpause"], data_format = "single-value")]
 pub struct RegistrationsPausedEvent {
     pub data: (),
@@ -316,6 +375,15 @@ pub enum DataKey {
     /// `true` while `pause_registrations` is in effect; absent or `false`
     /// means registrations are open. See `pause_registrations` / `resume_registrations`.
     RegistrationsPaused,
+    /// Reverse index from a canonical NGO name to its owning address, used to
+    /// enforce name uniqueness across registrations and renames.
+    NameOwner(Bytes),
+    /// Seconds that must elapse between `propose_upgrade` and
+    /// `execute_upgrade`. Zero (or absent) means the timelock is disabled.
+    UpgradeDelay,
+    /// The upgrade recorded by `propose_upgrade` and not yet executed or
+    /// cancelled. Absent means no upgrade is pending.
+    PendingUpgrade,
 }
 
 #[contracterror]
@@ -362,6 +430,17 @@ pub enum Error {
     /// `register` was called while the admin has paused new registrations.
     /// Resume with `resume_registrations`.
     RegistrationsPaused = 16,
+    /// The supplied canonical name is already held by another NGO.
+    NameTaken = 17,
+    /// `set_categories` was given a value with one or more reserved bits set.
+    InvalidCategories = 18,
+    /// `execute_upgrade` or `cancel_upgrade` was called with no upgrade proposed.
+    NoPendingUpgrade = 19,
+    /// `execute_upgrade` was called before the proposed upgrade's timelock elapsed.
+    UpgradeDelayNotElapsed = 20,
+    /// The immediate `upgrade` entry point was called while a non-zero
+    /// `upgrade_delay` is configured.
+    UpgradeTimelockEnabled = 21,
     // Error numbers are append-only: never renumber, reuse, or remove a
     // variant. New errors take the next unused number. See
     // docs/UPGRADE_POLICY.md.
@@ -400,6 +479,40 @@ fn extend_ngo_ttl(env: &Env, owner: &Address) {
         NGO_LIFETIME_THRESHOLD,
         NGO_BUMP_AMOUNT,
     );
+}
+
+/// Loads an NGO from persistent storage, bumping its TTL on access so an
+/// entry that is actively read or written cannot be archived out from under
+/// its owner.
+fn load_ngo(env: &Env, owner: &Address) -> Result<Ngo, Error> {
+    let ngo: Ngo = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Ngo(owner.clone()))
+        .ok_or(Error::NotRegistered)?;
+    extend_ngo_ttl(env, owner);
+    Ok(ngo)
+}
+
+/// Like [`load_ngo`] for paths where a missing entry is a normal result
+/// (metadata lookups and index maintenance): returns `None` but still bumps
+/// the TTL of every entry that exists.
+fn try_load_ngo(env: &Env, owner: &Address) -> Option<Ngo> {
+    let ngo: Ngo = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Ngo(owner.clone()))?;
+    extend_ngo_ttl(env, owner);
+    Some(ngo)
+}
+
+/// Saves an NGO to persistent storage and bumps its TTL in the same step, so
+/// no caller can write an entry and forget to keep it alive.
+fn save_ngo(env: &Env, owner: &Address, ngo: &Ngo) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Ngo(owner.clone()), ngo);
+    extend_ngo_ttl(env, owner);
 }
 
 fn extend_owner_index_ttl(env: &Env, index: u32, owner: &Address) {
@@ -704,12 +817,7 @@ fn require_registrations_open(env: &Env) -> Result<(), Error> {
 /// no entry fails with `Error::NotRegistered`, and one that is already
 /// verified with `Error::AlreadyVerified`.
 fn approve_registered_ngo(env: &Env, ngo_owner: Address) -> Result<(), Error> {
-    let key = DataKey::Ngo(ngo_owner.clone());
-    let mut ngo: Ngo = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(Error::NotRegistered)?;
+    let mut ngo = load_ngo(env, &ngo_owner)?;
     if ngo.verified {
         return Err(Error::AlreadyVerified);
     }
@@ -728,7 +836,7 @@ fn approve_registered_ngo(env: &Env, ngo_owner: Address) -> Result<(), Error> {
                 .ok_or(Error::ArithmeticOverflow)?,
         )
     };
-    env.storage().persistent().set(&key, &ngo);
+    save_ngo(env, &ngo_owner, &ngo);
     // Clear any prior revocation flag so `verification_status` returns
     // `Verified` rather than `Revoked` after a re-approval. See issue #448.
     env.storage()
@@ -740,7 +848,6 @@ fn approve_registered_ngo(env: &Env, ngo_owner: Address) -> Result<(), Error> {
     set_verified_count(env, new_verified);
 
     extend_instance_ttl(env);
-    extend_ngo_ttl(env, &ngo_owner);
 
     ApprovedEvent {
         owner: ngo_owner,
@@ -770,11 +877,7 @@ fn delete_ngo_entry(env: &Env, owner: &Address) -> Result<(), Error> {
 
     // Keep `verified_count` and the name index in step with the entry being
     // removed.
-    if let Some(ngo) = env
-        .storage()
-        .persistent()
-        .get::<_, Ngo>(&DataKey::Ngo(owner.clone()))
-    {
+    if let Some(ngo) = try_load_ngo(env, owner) {
         unindex_name(env, &ngo.name, owner);
         if ngo.verified {
             let verified = get_verified_count(env);
@@ -784,20 +887,16 @@ fn delete_ngo_entry(env: &Env, owner: &Address) -> Result<(), Error> {
     }
     // Keep `verified_count` in step with the entry being removed, and
     // capture the name before we delete the entry so we can free it below.
-    let maybe_name: Option<String> = env
-        .storage()
-        .persistent()
-        .get::<_, Ngo>(&DataKey::Ngo(owner.clone()))
-        .map(|ngo| {
-            if ngo.verified {
-                let verified = get_verified_count(env);
-                // Saturating sub rather than propagating an error here:
-                // underflow means the counter was already inconsistent,
-                // and removing the entry is still the right thing to do.
-                set_verified_count(env, verified.saturating_sub(1));
-            }
-            ngo.name
-        });
+    let maybe_name: Option<String> = try_load_ngo(env, owner).map(|ngo| {
+        if ngo.verified {
+            let verified = get_verified_count(env);
+            // Saturating sub rather than propagating an error here:
+            // underflow means the counter was already inconsistent,
+            // and removing the entry is still the right thing to do.
+            set_verified_count(env, verified.saturating_sub(1));
+        }
+        ngo.name
+    });
 
     env.storage()
         .persistent()
@@ -810,9 +909,7 @@ fn delete_ngo_entry(env: &Env, owner: &Address) -> Result<(), Error> {
     // Free the name so a future registrant can claim it.
     if let Some(name) = maybe_name {
         let key = canonical_name_key(env, &name);
-        env.storage()
-            .instance()
-            .remove(&DataKey::NameOwner(key));
+        env.storage().instance().remove(&DataKey::NameOwner(key));
     }
 
     // Remove from index using swap-and-pop to maintain a dense [0..count) index
@@ -1230,7 +1327,7 @@ impl NgoRegistry {
             categories: 0,
             pending_owner: None,
         };
-        env.storage().persistent().set(&key, &ngo);
+        save_ngo(&env, &owner, &ngo);
 
         env.storage()
             .instance()
@@ -1252,7 +1349,6 @@ impl NgoRegistry {
         index_name(&env, &name, &owner);
 
         extend_instance_ttl(&env);
-        extend_ngo_ttl(&env, &owner);
         extend_owner_index_ttl(&env, index, &owner);
 
         RegisterEvent { owner, name }.publish(&env);
@@ -1279,12 +1375,7 @@ impl NgoRegistry {
     pub fn unregister(env: Env, owner: Address) -> Result<(), Error> {
         owner.require_auth();
 
-        let key = DataKey::Ngo(owner.clone());
-        let ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotRegistered)?;
+        let ngo = load_ngo(&env, &owner)?;
         if ngo.verified {
             return Err(Error::AlreadyVerified);
         }
@@ -1329,12 +1420,7 @@ impl NgoRegistry {
     pub fn remove_ngo(env: Env, ngo_owner: Address) -> Result<(), Error> {
         require_admin(&env)?;
 
-        let key = DataKey::Ngo(ngo_owner.clone());
-        let ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotRegistered)?;
+        let ngo = load_ngo(&env, &ngo_owner)?;
         if ngo.verified {
             return Err(Error::AlreadyVerified);
         }
@@ -1393,12 +1479,7 @@ impl NgoRegistry {
     ) -> Result<(), Error> {
         require_approver(&env, &approver)?;
 
-        let key = DataKey::Ngo(ngo_owner.clone());
-        let ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotRegistered)?;
+        let ngo = load_ngo(&env, &ngo_owner)?;
         if ngo.verified {
             return Err(Error::AlreadyVerified);
         }
@@ -1697,12 +1778,7 @@ impl NgoRegistry {
 
         validate_name(&name)?;
 
-        let key = DataKey::Ngo(owner.clone());
-        let mut ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotRegistered)?;
+        let mut ngo = load_ngo(&env, &owner)?;
         if ngo.verified {
             return Err(Error::AlreadyVerified);
         }
@@ -1732,10 +1808,9 @@ impl NgoRegistry {
                 .set(&DataKey::NameOwner(new_name_key), &owner);
 
             ngo.name = name.clone();
-            env.storage().persistent().set(&key, &ngo);
+            save_ngo(&env, &owner, &ngo);
             index_name(&env, &name, &owner);
             extend_instance_ttl(&env);
-            extend_ngo_ttl(&env, &owner);
             RenamedEvent { owner, name }.publish(&env);
         }
 
@@ -1781,20 +1856,14 @@ impl NgoRegistry {
 
         validate_metadata_uri(&metadata_uri)?;
 
-        let key = DataKey::Ngo(owner.clone());
-        let mut ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotRegistered)?;
+        let mut ngo = load_ngo(&env, &owner)?;
 
         // Only write and emit when the URI actually changes, matching
         // `update_name`.
         if ngo.metadata_uri != metadata_uri {
             ngo.metadata_uri = metadata_uri.clone();
-            env.storage().persistent().set(&key, &ngo);
+            save_ngo(&env, &owner, &ngo);
             extend_instance_ttl(&env);
-            extend_ngo_ttl(&env, &owner);
 
             MetadataUriSetEvent {
                 owner,
@@ -1862,10 +1931,7 @@ impl NgoRegistry {
     /// assert_eq!(client.metadata_uri(&owner), uri);
     /// ```
     pub fn metadata_uri(env: Env, owner: Address) -> Option<String> {
-        env.storage()
-            .persistent()
-            .get::<_, Ngo>(&DataKey::Ngo(owner))
-            .and_then(|ngo| ngo.metadata_uri)
+        try_load_ngo(&env, &owner).and_then(|ngo| ngo.metadata_uri)
     }
 
     /// Sets the category bitmask for the caller's own NGO entry. The bitmask
@@ -1902,12 +1968,7 @@ impl NgoRegistry {
             return Err(Error::InvalidCategories);
         }
 
-        let key = DataKey::Ngo(owner.clone());
-        let mut ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotRegistered)?;
+        let mut ngo = load_ngo(&env, &owner)?;
 
         if ngo.verified {
             return Err(Error::AlreadyVerified);
@@ -1915,9 +1976,8 @@ impl NgoRegistry {
 
         if ngo.categories != categories {
             ngo.categories = categories;
-            env.storage().persistent().set(&key, &ngo);
+            save_ngo(&env, &owner, &ngo);
             extend_instance_ttl(&env);
-            extend_ngo_ttl(&env, &owner);
 
             CategoriesSetEvent { owner, categories }.publish(&env);
         }
@@ -1946,9 +2006,7 @@ impl NgoRegistry {
     /// assert_eq!(client.categories(&owner), CATEGORY_ENVIRONMENT);
     /// ```
     pub fn categories(env: Env, owner: Address) -> u32 {
-        env.storage()
-            .persistent()
-            .get::<_, Ngo>(&DataKey::Ngo(owner))
+        try_load_ngo(&env, &owner)
             .map(|ngo| ngo.categories)
             .unwrap_or(0)
     }
@@ -1979,11 +2037,7 @@ impl NgoRegistry {
     /// assert!(!ngo.verified);
     /// ```
     pub fn get_ngo(env: Env, owner: Address) -> Result<Ngo, Error> {
-        let mut ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Ngo(owner))
-            .ok_or(Error::NotRegistered)?;
+        let mut ngo = load_ngo(&env, &owner)?;
         if ngo.verified && has_expired(&env, ngo.verified_until) {
             ngo.verified = false;
         }
@@ -2045,7 +2099,7 @@ impl NgoRegistry {
     /// assert_eq!(client.verification_status(&owner), VerificationStatus::Verified);
     /// ```
     pub fn verification_status(env: Env, owner: Address) -> VerificationStatus {
-        let ngo: Ngo = match env.storage().persistent().get(&DataKey::Ngo(owner.clone())) {
+        let ngo: Ngo = match try_load_ngo(&env, &owner) {
             Some(n) => n,
             None => return VerificationStatus::Unknown,
         };
@@ -2292,12 +2346,7 @@ impl NgoRegistry {
     pub fn revoke_ngo(env: Env, approver: Address, ngo_owner: Address) -> Result<(), Error> {
         require_approver(&env, &approver)?;
 
-        let key = DataKey::Ngo(ngo_owner.clone());
-        let mut ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotRegistered)?;
+        let mut ngo = load_ngo(&env, &ngo_owner)?;
         if !ngo.verified {
             return Err(Error::NotVerified);
         }
@@ -2305,7 +2354,7 @@ impl NgoRegistry {
         // A revoked verification has no expiry to keep; clear it so the entry
         // doesn't carry a stale timestamp (#348).
         ngo.verified_until = None;
-        env.storage().persistent().set(&key, &ngo);
+        save_ngo(&env, &ngo_owner, &ngo);
         // Mark as revoked so `verification_status` can distinguish this from
         // a pending (never-approved) entry. See issue #448.
         env.storage()
@@ -2317,7 +2366,6 @@ impl NgoRegistry {
         set_verified_count(&env, new_verified);
 
         extend_instance_ttl(&env);
-        extend_ngo_ttl(&env, &ngo_owner);
 
         RevokedEvent {
             owner: ngo_owner,
@@ -2370,12 +2418,7 @@ impl NgoRegistry {
             return Err(Error::NoVerifyPeriod);
         }
 
-        let key = DataKey::Ngo(ngo_owner.clone());
-        let mut ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotRegistered)?;
+        let mut ngo = load_ngo(&env, &ngo_owner)?;
         if !ngo.verified {
             return Err(Error::NotVerified);
         }
@@ -2386,10 +2429,9 @@ impl NgoRegistry {
             .checked_add(period)
             .ok_or(Error::ArithmeticOverflow)?;
         ngo.verified_until = Some(verified_until);
-        env.storage().persistent().set(&key, &ngo);
+        save_ngo(&env, &ngo_owner, &ngo);
 
         extend_instance_ttl(&env);
-        extend_ngo_ttl(&env, &ngo_owner);
 
         RenewedEvent {
             owner: ngo_owner,
@@ -2423,13 +2465,8 @@ impl NgoRegistry {
     /// client.touch_ngo(&owner);
     /// ```
     pub fn touch_ngo(env: Env, owner: Address) -> Result<(), Error> {
-        let ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Ngo(owner.clone()))
-            .ok_or(Error::NotRegistered)?;
+        let ngo = load_ngo(&env, &owner)?;
         extend_instance_ttl(&env);
-        extend_ngo_ttl(&env, &owner);
         if env
             .storage()
             .persistent()
@@ -2605,18 +2642,12 @@ impl NgoRegistry {
             return Err(Error::InvalidAdmin); // Reusing error for invalid transfer
         }
 
-        let key = DataKey::Ngo(current_owner.clone());
-        let mut ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotRegistered)?;
+        let mut ngo = load_ngo(&env, &current_owner)?;
 
         ngo.pending_owner = Some(new_owner.clone());
-        env.storage().persistent().set(&key, &ngo);
+        save_ngo(&env, &current_owner, &ngo);
 
         extend_instance_ttl(&env);
-        extend_ngo_ttl(&env, &current_owner);
 
         OwnershipProposedEvent {
             current_owner,
@@ -2639,11 +2670,7 @@ impl NgoRegistry {
         new_owner.require_auth();
 
         let old_key = DataKey::Ngo(old_owner.clone());
-        let ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&old_key)
-            .ok_or(Error::NotRegistered)?;
+        let ngo = load_ngo(&env, &old_owner)?;
 
         // Verify the new_owner matches the pending_owner
         if ngo.pending_owner != Some(new_owner.clone()) {
@@ -2651,8 +2678,7 @@ impl NgoRegistry {
         }
 
         // Check if new_owner already has an NGO registered
-        let new_key = DataKey::Ngo(new_owner.clone());
-        if env.storage().persistent().has(&new_key) {
+        if try_load_ngo(&env, &new_owner).is_some() {
             return Err(Error::AlreadyRegistered);
         }
 
@@ -2689,10 +2715,9 @@ impl NgoRegistry {
         }
 
         // Store the new entry
-        env.storage().persistent().set(&new_key, &updated_ngo);
+        save_ngo(&env, &new_owner, &updated_ngo);
 
         extend_instance_ttl(&env);
-        extend_ngo_ttl(&env, &new_owner);
 
         // Update vault expectations: the vault will need to handle this
         // by allowing withdrawals to either the old or new owner during a grace period
@@ -2712,22 +2737,16 @@ impl NgoRegistry {
     pub fn cancel_owner_transfer(env: Env, owner: Address) -> Result<(), Error> {
         owner.require_auth();
 
-        let key = DataKey::Ngo(owner.clone());
-        let mut ngo: Ngo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotRegistered)?;
+        let mut ngo = load_ngo(&env, &owner)?;
 
         if ngo.pending_owner.is_none() {
             return Err(Error::NoPendingAdmin); // Reusing error for no pending transfer
         }
 
         ngo.pending_owner = None;
-        env.storage().persistent().set(&key, &ngo);
+        save_ngo(&env, &owner, &ngo);
 
         extend_instance_ttl(&env);
-        extend_ngo_ttl(&env, &owner);
 
         OwnershipCancelledEvent { owner, data: () }.publish(&env);
 

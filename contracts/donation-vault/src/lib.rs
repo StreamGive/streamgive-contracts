@@ -852,16 +852,52 @@ fn extend_stream_ttl(env: &Env, stream_id: u64) {
 
 /// Extends a cancelled stream beyond the normal retention period by the
 /// configured indexing grace period.
+///
+/// The threshold is the extended window itself, not the ordinary stream
+/// threshold: `load_stream` / `save_stream` may already have bumped the entry
+/// to `STREAM_BUMP_AMOUNT`, which sits above the ordinary threshold and would
+/// otherwise make this extension a no-op.
 fn extend_cancelled_stream_ttl(env: &Env, stream_id: u64, grace_ledgers: u32) -> Result<(), Error> {
     let bump_amount = STREAM_BUMP_AMOUNT
         .checked_add(grace_ledgers)
         .ok_or(Error::ArithmeticOverflow)?;
-    env.storage().persistent().extend_ttl(
-        &DataKey::Stream(stream_id),
-        STREAM_LIFETIME_THRESHOLD,
-        bump_amount,
-    );
+    env.storage()
+        .persistent()
+        .extend_ttl(&DataKey::Stream(stream_id), bump_amount, bump_amount);
     Ok(())
+}
+
+/// Loads a stream from persistent storage, bumping its TTL on access so an
+/// actively used stream cannot be archived out from under its donor or NGO.
+fn load_stream(env: &Env, stream_id: u64) -> Result<Stream, Error> {
+    let stream: Stream = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Stream(stream_id))
+        .ok_or(Error::StreamNotFound)?;
+    extend_stream_ttl(env, stream_id);
+    Ok(stream)
+}
+
+/// Like [`load_stream`] for read paths where a missing id is a normal result
+/// (batch lookups and index scans): returns `None` but still bumps the TTL of
+/// every entry that exists.
+fn try_load_stream(env: &Env, stream_id: u64) -> Option<Stream> {
+    let stream: Stream = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Stream(stream_id))?;
+    extend_stream_ttl(env, stream_id);
+    Some(stream)
+}
+
+/// Saves a stream to persistent storage and bumps its TTL in the same step, so
+/// no caller can write a stream and forget to keep its entry alive.
+fn save_stream(env: &Env, stream_id: u64, stream: &Stream) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Stream(stream_id), stream);
+    extend_stream_ttl(env, stream_id);
 }
 
 /// Reads the configured admin and requires their auth, failing with
@@ -966,7 +1002,7 @@ fn read_donor_totals(
     }
     let total: u64 = instance.get(&DataKey::NextStreamId).unwrap_or(0);
     for id in 0..total {
-        let Some(stream) = storage.get::<_, Stream>(&DataKey::Stream(id)) else {
+        let Some(stream) = try_load_stream(env, id) else {
             continue;
         };
         if stream.donor == *donor && stream.token == *token {
@@ -1402,9 +1438,7 @@ fn cancel_stream_inner(
     stream.cancelled = true;
     stream.last_update = now;
     stream.status = StreamStatus::Cancelled;
-    env.storage()
-        .persistent()
-        .set(&DataKey::Stream(stream_id), &stream);
+    save_stream(env, stream_id, &stream);
     extend_cancelled_stream_ttl(env, stream_id, grace_ledgers)?;
 
     // External token transfer is the last step
@@ -1549,9 +1583,7 @@ fn create_stream_inner(
     update_donor_totals(&env, &donor, &token, deposit, 0)?;
 
     // Write all state before the external token transfer
-    env.storage()
-        .persistent()
-        .set(&DataKey::Stream(stream_id), &stream);
+    save_stream(&env, stream_id, &stream);
     let ngo_key = DataKey::NgoStreams(ngo.clone());
     let mut ngo_streams: Vec<u64> = env
         .storage()
@@ -1584,7 +1616,6 @@ fn create_stream_inner(
         .set(&DataKey::TotalDonated, &next_total);
 
     extend_instance_ttl(&env);
-    extend_stream_ttl(&env, stream_id);
 
     // The deposit now belongs to this stream, so record it against the
     // token's committed balance before the funds move (issue #346).
@@ -1929,10 +1960,7 @@ impl DonationVault {
     /// assert!(client.get_stream(&stream_id).cancelled);
     /// ```
     pub fn get_stream(env: Env, stream_id: u64) -> Result<Stream, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Stream(stream_id))
-            .ok_or(Error::StreamNotFound)
+        load_stream(&env, stream_id)
     }
 
     /// Reads multiple streams in a single call, returning one entry per
@@ -1977,7 +2005,7 @@ impl DonationVault {
         }
         let mut streams: Vec<Option<Stream>> = Vec::new(&env);
         for id in ids.iter() {
-            streams.push_back(env.storage().persistent().get(&DataKey::Stream(id)));
+            streams.push_back(try_load_stream(&env, id));
         }
         Ok(streams)
     }
@@ -1994,11 +2022,7 @@ impl DonationVault {
             .unwrap_or(0);
         let mut ids = Vec::new(&env);
         for id in 0..total {
-            if let Some(stream) = env
-                .storage()
-                .persistent()
-                .get::<_, Stream>(&DataKey::Stream(id))
-            {
+            if let Some(stream) = try_load_stream(&env, id) {
                 if stream.donor == donor {
                     ids.push_back(id);
                 }
@@ -2107,11 +2131,7 @@ impl DonationVault {
         while index < window_end && ids.len() < target {
             let id = ngo_streams.get(index).unwrap();
             index += 1;
-            if let Some(stream) = env
-                .storage()
-                .persistent()
-                .get::<_, Stream>(&DataKey::Stream(id))
-            {
+            if let Some(stream) = try_load_stream(&env, id) {
                 if matches!(stream.status, StreamStatus::Active | StreamStatus::Paused) {
                     ids.push_back(id);
                 }
@@ -2181,11 +2201,7 @@ impl DonationVault {
     /// assert_eq!(client.get_stream(&stream_id).balance, 1_000);
     /// ```
     pub fn pending_accrual(env: Env, stream_id: u64) -> Result<i128, Error> {
-        let stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Stream(stream_id))
-            .ok_or(Error::StreamNotFound)?;
+        let stream = load_stream(&env, stream_id)?;
 
         // Mirror `settle`: a paused stream accrues nothing.
         if stream.status == StreamStatus::Paused {
@@ -2236,11 +2252,7 @@ impl DonationVault {
     /// assert_eq!(client.depletion_time(&stream_id), None);
     /// ```
     pub fn depletion_time(env: Env, stream_id: u64) -> Result<Option<u64>, Error> {
-        let stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Stream(stream_id))
-            .ok_or(Error::StreamNotFound)?;
+        let stream = load_stream(&env, stream_id)?;
 
         Ok(math::seconds_to_deplete(stream.rate, stream.balance)
             .and_then(|seconds| accrual_base(&stream).checked_add(seconds)))
@@ -2284,11 +2296,7 @@ impl DonationVault {
     /// assert_eq!(net, 475);  // 500 - 25
     /// ```
     pub fn pending_payout(env: Env, stream_id: u64) -> Result<(i128, i128), Error> {
-        let stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Stream(stream_id))
-            .ok_or(Error::StreamNotFound)?;
+        let stream = load_stream(&env, stream_id)?;
 
         // Mirror `settle`: a paused stream accrues nothing.
         let gross = if stream.status == StreamStatus::Paused {
@@ -2345,11 +2353,7 @@ impl DonationVault {
     /// assert_eq!(client.pending_refund(&stream_id), 800);
     /// ```
     pub fn pending_refund(env: Env, stream_id: u64) -> Result<i128, Error> {
-        let stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Stream(stream_id))
-            .ok_or(Error::StreamNotFound)?;
+        let stream = load_stream(&env, stream_id)?;
 
         // Mirror `settle`'s accrual rules so this matches what `cancel_stream`
         // would actually refund: a paused stream accrues nothing, and a
@@ -2390,10 +2394,7 @@ impl DonationVault {
     /// client.extend_stream(&stream_id);
     /// ```
     pub fn extend_stream(env: Env, stream_id: u64) -> Result<(), Error> {
-        if !env.storage().persistent().has(&DataKey::Stream(stream_id)) {
-            return Err(Error::StreamNotFound);
-        }
-        extend_stream_ttl(&env, stream_id);
+        load_stream(&env, stream_id)?;
         Ok(())
     }
 
@@ -3525,12 +3526,7 @@ impl DonationVault {
     /// and `StreamEmpty` for one with a zero balance that is none of those.
     pub fn pause_stream(env: Env, stream_id: u64) -> Result<i128, Error> {
         require_not_paused(&env)?;
-        let key = DataKey::Stream(stream_id);
-        let mut stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::StreamNotFound)?;
+        let mut stream = load_stream(&env, stream_id)?;
 
         stream.donor.require_auth();
         if stream.cancelled {
@@ -3553,9 +3549,8 @@ impl DonationVault {
         } else {
             stream.status = StreamStatus::Paused;
         }
-        env.storage().persistent().set(&key, &stream);
+        save_stream(&env, stream_id, &stream);
         extend_instance_ttl(&env);
-        extend_stream_ttl(&env, stream_id);
 
         PausedStreamEvent { stream_id, settled }.publish(&env);
         Ok(settled)
@@ -3593,12 +3588,7 @@ impl DonationVault {
     /// assert_eq!(client.get_stream(&stream_id).memo, renamed);
     /// ```
     pub fn set_memo(env: Env, stream_id: u64, memo: Bytes) -> Result<(), Error> {
-        let key = DataKey::Stream(stream_id);
-        let mut stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::StreamNotFound)?;
+        let mut stream = load_stream(&env, stream_id)?;
 
         stream.donor.require_auth();
 
@@ -3614,9 +3604,8 @@ impl DonationVault {
 
         let old_memo = stream.memo.clone();
         stream.memo = memo.clone();
-        env.storage().persistent().set(&key, &stream);
+        save_stream(&env, stream_id, &stream);
         extend_instance_ttl(&env);
-        extend_stream_ttl(&env, stream_id);
 
         MemoSetEvent {
             stream_id,
@@ -3631,12 +3620,7 @@ impl DonationVault {
     /// Resumes a paused stream. No time elapsed while paused is added to accrual.
     pub fn resume_stream(env: Env, stream_id: u64) -> Result<(), Error> {
         require_not_paused(&env)?;
-        let key = DataKey::Stream(stream_id);
-        let mut stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::StreamNotFound)?;
+        let mut stream = load_stream(&env, stream_id)?;
 
         stream.donor.require_auth();
         if stream.cancelled {
@@ -3653,9 +3637,8 @@ impl DonationVault {
 
         stream.status = StreamStatus::Active;
         stream.last_update = env.ledger().timestamp();
-        env.storage().persistent().set(&key, &stream);
+        save_stream(&env, stream_id, &stream);
         extend_instance_ttl(&env);
-        extend_stream_ttl(&env, stream_id);
 
         ResumedStreamEvent { stream_id }.publish(&env);
         Ok(())
@@ -3700,12 +3683,7 @@ impl DonationVault {
     pub fn withdraw(env: Env, stream_id: u64) -> Result<i128, Error> {
         require_not_paused(&env)?;
 
-        let key = DataKey::Stream(stream_id);
-        let mut stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::StreamNotFound)?;
+        let mut stream = load_stream(&env, stream_id)?;
 
         stream.ngo.require_auth();
 
@@ -3727,9 +3705,8 @@ impl DonationVault {
         if drained {
             stream.status = StreamStatus::Drained;
         }
-        env.storage().persistent().set(&key, &stream);
+        save_stream(&env, stream_id, &stream);
         extend_instance_ttl(&env);
-        extend_stream_ttl(&env, stream_id);
 
         // The accrued amount is leaving the vault, so it no longer counts
         // against the token's committed balance (issue #346).
@@ -3849,12 +3826,7 @@ impl DonationVault {
         let mut total_accrued: i128 = 0;
 
         for stream_id in stream_ids.iter() {
-            let key = DataKey::Stream(stream_id);
-            let mut stream: Stream = env
-                .storage()
-                .persistent()
-                .get(&key)
-                .ok_or(Error::StreamNotFound)?;
+            let mut stream = load_stream(&env, stream_id)?;
 
             if stream.status == StreamStatus::Paused {
                 return Err(Error::StreamPaused);
@@ -3899,8 +3871,7 @@ impl DonationVault {
                 stream.status = StreamStatus::Drained;
                 drained_totals.set(stream_id, stream.withdrawn);
             }
-            env.storage().persistent().set(&key, &stream);
-            extend_stream_ttl(&env, stream_id);
+            save_stream(&env, stream_id, &stream);
 
             // Accumulate net amounts per token
             let net_total = net_payouts.get(stream.token.clone()).unwrap_or(0);
@@ -4148,12 +4119,7 @@ impl DonationVault {
     /// assert!(client.get_stream(&stream_id).cancelled);
     /// ```
     pub fn cancel_stream(env: Env, stream_id: u64) -> Result<i128, Error> {
-        let key = DataKey::Stream(stream_id);
-        let stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::StreamNotFound)?;
+        let stream = load_stream(&env, stream_id)?;
 
         stream.donor.require_auth();
 
@@ -4249,11 +4215,7 @@ impl DonationVault {
         let mut donor: Option<Address> = None;
         let mut streams: Vec<Stream> = Vec::new(&env);
         for stream_id in stream_ids.iter() {
-            let stream: Stream = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Stream(stream_id))
-                .ok_or(Error::StreamNotFound)?;
+            let stream = load_stream(&env, stream_id)?;
 
             match &donor {
                 None => donor = Some(stream.donor.clone()),
@@ -4355,12 +4317,7 @@ impl DonationVault {
             return Err(Error::NotPaused);
         }
 
-        let key = DataKey::Stream(stream_id);
-        let mut stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::StreamNotFound)?;
+        let mut stream = load_stream(&env, stream_id)?;
 
         if stream.cancelled {
             return Err(Error::StreamCancelled);
@@ -4382,7 +4339,7 @@ impl DonationVault {
         stream.cancelled = true;
         stream.last_update = now;
         stream.status = StreamStatus::Cancelled;
-        env.storage().persistent().set(&key, &stream);
+        save_stream(&env, stream_id, &stream);
         extend_instance_ttl(&env);
         let grace_ledgers = env
             .storage()
@@ -4444,12 +4401,7 @@ impl DonationVault {
             return Err(Error::DepositTooLow);
         }
 
-        let key = DataKey::Stream(stream_id);
-        let mut stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::StreamNotFound)?;
+        let mut stream = load_stream(&env, stream_id)?;
 
         stream.donor.require_auth();
 
@@ -4502,9 +4454,8 @@ impl DonationVault {
         env.storage()
             .instance()
             .set(&DataKey::TotalDonated, &next_total);
-        env.storage().persistent().set(&key, &stream);
+        save_stream(&env, stream_id, &stream);
         extend_instance_ttl(&env);
-        extend_stream_ttl(&env, stream_id);
 
         // The top-up joins this stream's share of the token's committed
         // balance before it is pulled in (issue #346).
@@ -4573,12 +4524,7 @@ impl DonationVault {
             }
         }
 
-        let key = DataKey::Stream(stream_id);
-        let mut stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::StreamNotFound)?;
+        let mut stream = load_stream(&env, stream_id)?;
 
         stream.donor.require_auth();
         let old_rate = stream.rate;
@@ -4611,9 +4557,8 @@ impl DonationVault {
         let settled = settle(&env, stream_id, &mut stream, now)?;
         stream.rate = new_rate;
 
-        env.storage().persistent().set(&key, &stream);
+        save_stream(&env, stream_id, &stream);
         extend_instance_ttl(&env);
-        extend_stream_ttl(&env, stream_id);
 
         RateModifiedEvent {
             stream_id,
@@ -4633,12 +4578,7 @@ impl DonationVault {
     pub fn transfer_stream(env: Env, stream_id: u64, new_ngo: Address) -> Result<(), Error> {
         require_not_paused(&env)?;
 
-        let key = DataKey::Stream(stream_id);
-        let mut stream: Stream = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::StreamNotFound)?;
+        let mut stream = load_stream(&env, stream_id)?;
 
         stream.donor.require_auth();
 
@@ -4664,7 +4604,7 @@ impl DonationVault {
         }
         stream.ngo = new_ngo.clone();
 
-        env.storage().persistent().set(&key, &stream);
+        save_stream(&env, stream_id, &stream);
 
         let old_key = DataKey::NgoStreams(old_ngo.clone());
         if let Some(old_streams) = env.storage().persistent().get::<_, Vec<u64>>(&old_key) {
@@ -4690,7 +4630,6 @@ impl DonationVault {
             STREAM_BUMP_AMOUNT,
         );
         extend_instance_ttl(&env);
-        extend_stream_ttl(&env, stream_id);
 
         TransferStreamEvent {
             stream_id,
